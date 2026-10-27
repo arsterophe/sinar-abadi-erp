@@ -3,7 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { createServerClientInstance } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createSinglePayment, getPaymentStatus } from "@/lib/mayar/client";
+import {
+  createSinglePayment,
+  getPaymentStatus,
+  findInvoiceByOrderRef,
+  validateMayarPaymentUrl,
+} from "@/lib/mayar/client";
 import { SupabaseClient } from "@supabase/supabase-js";
 import {
   BuatPesananJualInput,
@@ -1024,7 +1029,7 @@ export async function kirimPesananJualAction(
     // 3. Verifikasi Pesanan Saat Ini di Database
     const { data: pesanan, error: pesananError } = await supabase
       .from("pesanan_jual")
-      .select("id, nomor, status, pelanggan_id")
+      .select("id, nomor, status, pelanggan_id, jatuh_tempo")
       .eq("id", cleanPesananId)
       .maybeSingle();
 
@@ -1032,6 +1037,26 @@ export async function kirimPesananJualAction(
       return { success: false, error: "Data pesanan jual tidak ditemukan di database." };
     }
 
+    // IDEMPOTENSI (BR-07): Jika pesanan sudah berstatus 'dikirim' (misalnya akibat klik ganda,
+    // pengulangan jaringan, atau aksi konkuren), kembalikan respons sukses secara aman
+    // tanpa memanggil RPC kirim_pesanan lagi agar mutasi stok dan audit log tidak terduplikasi.
+    if (pesanan.status === "dikirim") {
+      revalidatePath("/pesanan-jual");
+      revalidatePath("/pelanggan");
+      revalidatePath("/");
+
+      return {
+        success: true,
+        data: {
+          id: cleanPesananId,
+          nomor: pesanan.nomor,
+          status: "dikirim",
+          jatuh_tempo: pesanan.jatuh_tempo ? String(pesanan.jatuh_tempo) : "",
+        },
+      };
+    }
+
+    // BR-07: Hanya pesanan berstatus 'dikonfirmasi' yang dapat dikirim
     if (pesanan.status !== "dikonfirmasi") {
       return {
         success: false,
@@ -1045,6 +1070,30 @@ export async function kirimPesananJualAction(
     });
 
     if (rpcError) {
+      // Periksa kembali status di DB: jika aksi paralel telah berhasil mengubahnya menjadi 'dikirim',
+      // tangani secara idempoten agar tidak memicu error palsu ke pengguna
+      const { data: pesananTerkini } = await supabase
+        .from("pesanan_jual")
+        .select("id, nomor, status, jatuh_tempo")
+        .eq("id", cleanPesananId)
+        .maybeSingle();
+
+      if (pesananTerkini && pesananTerkini.status === "dikirim") {
+        revalidatePath("/pesanan-jual");
+        revalidatePath("/pelanggan");
+        revalidatePath("/");
+
+        return {
+          success: true,
+          data: {
+            id: cleanPesananId,
+            nomor: pesananTerkini.nomor,
+            status: "dikirim",
+            jatuh_tempo: pesananTerkini.jatuh_tempo ? String(pesananTerkini.jatuh_tempo) : "",
+          },
+        };
+      }
+
       return {
         success: false,
         error: `Gagal memproses pengiriman pesanan di database: ${rpcError.message || "Terjadi kesalahan pada fungsi RPC."}`,
@@ -1145,12 +1194,25 @@ export async function lunasiPesananJualAction(
     // 3. Verifikasi Pesanan Saat Ini di Database
     const { data: pesanan, error: pesananError } = await supabase
       .from("pesanan_jual")
-      .select("id, nomor, status, total")
+      .select("id, nomor, status, total, mayar_payment_id, mayar_status, dilunasi_pada")
       .eq("id", cleanPesananId)
       .maybeSingle();
 
     if (pesananError || !pesanan) {
       return { success: false, error: "Data pesanan jual tidak ditemukan di database." };
+    }
+
+    // Penanganan idempoten jika pesanan sudah berstatus 'lunas' sebelumnya
+    if (pesanan.status === "lunas") {
+      return {
+        success: true,
+        data: {
+          id: cleanPesananId,
+          nomor: pesanan.nomor,
+          status: "lunas",
+          dilunasi_pada: pesanan.dilunasi_pada || new Date().toISOString(),
+        },
+      };
     }
 
     if (pesanan.status !== "dikirim") {
@@ -1160,38 +1222,122 @@ export async function lunasiPesananJualAction(
       };
     }
 
-    const nowIso = new Date().toISOString();
+    // 4. Verifikasi Pembayaran jika Pesanan Menggunakan Gateway Digital Mayar
+    // Aturan Bisnis & Keamanan:
+    // Status pesanan HANYA boleh berubah menjadi 'lunas' setelah pembayaran benar-benar terverifikasi sah.
+    // Jika pembayaran menggunakan Mayar, jangan menganggap pembayaran berhasil hanya karena pengguna menekan tombol.
+    if (pesanan.mayar_payment_id) {
+      let isVerifiedPaid = false;
+      let verifiedAmount = Math.round(Number(pesanan.total));
+      let transactionId: string | null = null;
+      let paymentMethod: string | null = "mayar";
 
-    // 4. Perbarui Status Pesanan Menjadi 'lunas' di Database
-    const { error: updateError } = await supabase
-      .from("pesanan_jual")
-      .update({
-        status: "lunas",
-        dilunasi_pada: nowIso,
-      })
-      .eq("id", cleanPesananId);
+      if (pesanan.mayar_status === "paid") {
+        isVerifiedPaid = true;
+      } else {
+        // mayar_status belum paid di database. Verifikasi keaslian transaksi langsung ke gateway Mayar.
+        try {
+          const verifyRes = await getPaymentStatus(pesanan.mayar_payment_id);
+          if (verifyRes.success && verifyRes.data) {
+            const remoteStatus = (verifyRes.data.status || "").toLowerCase().trim();
+            const remoteAmount = Math.round(Number(verifyRes.data.amount));
+            const cleanTotal = Math.round(Number(pesanan.total));
 
-    if (updateError) {
+            if (remoteStatus === "paid" && remoteAmount === cleanTotal) {
+              isVerifiedPaid = true;
+              verifiedAmount = remoteAmount;
+              transactionId = verifyRes.data.transactionId || null;
+              paymentMethod = verifyRes.data.paymentMethod || "mayar";
+            } else if (remoteStatus === "paid" && remoteAmount !== cleanTotal) {
+              return {
+                success: false,
+                error: `Pelunasan ditolak: Nominal terverifikasi pada gateway Mayar (Rp${remoteAmount.toLocaleString("id-ID")}) tidak sesuai dengan total pesanan (Rp${cleanTotal.toLocaleString("id-ID")}).`,
+              };
+            } else {
+              return {
+                success: false,
+                error: `Pelunasan ditolak: Tagihan Mayar untuk pesanan ini belum terverifikasi lunas di gateway pembayaran (status saat ini: "${verifyRes.data.status || "unpaid"}"). Pembayaran Mayar yang belum terverifikasi tidak dapat menandai pesanan sebagai lunas.`,
+              };
+            }
+          } else {
+            return {
+              success: false,
+              error: `Pelunasan ditolak: Verifikasi tagihan Mayar ke gateway gagal (${verifyRes.error || "Transaksi tidak ditemukan"}). Pembayaran Mayar yang belum terverifikasi tidak dapat menandai pesanan sebagai lunas.`,
+            };
+          }
+        } catch (verifyEx) {
+          return {
+            success: false,
+            error: `Pelunasan ditolak: Gagal menghubungi gateway Mayar untuk memverifikasi pembayaran: ${verifyEx instanceof Error ? verifyEx.message : "Gangguan koneksi"}.`,
+          };
+        }
+      }
+
+      if (!isVerifiedPaid) {
+        return {
+          success: false,
+          error: "Pelunasan ditolak: Pembayaran Mayar belum terverifikasi lunas.",
+        };
+      }
+
+      // Pembayaran terbukti sah dan lunas di Mayar -> selesaikan secara atomik via RPC privat selesaikan_pembayaran_mayar
+      const adminSupabase = createAdminClient();
+      const { error: mayarRpcError } = await adminSupabase.rpc(
+        "selesaikan_pembayaran_mayar",
+        {
+          p_pesanan_id: cleanPesananId,
+          p_payment_id: pesanan.mayar_payment_id,
+          p_verified_amount: verifiedAmount,
+          p_verified_status: "paid",
+          p_transaction_id: transactionId,
+          p_payment_method: paymentMethod,
+          p_pelaku_id: user.id,
+        }
+      );
+
+      if (mayarRpcError) {
+        return {
+          success: false,
+          error: `Gagal menyelesaikan pelunasan Mayar di database: ${mayarRpcError.message || "Kesalahan RPC"}`,
+        };
+      }
+
+      const nowIso = new Date().toISOString();
+      revalidatePath("/pesanan-jual");
+      revalidatePath("/pelanggan");
+      revalidatePath("/");
+
       return {
-        success: false,
-        error: `Gagal memperbarui status pelunasan di database: ${updateError.message}`,
+        success: true,
+        data: {
+          id: cleanPesananId,
+          nomor: pesanan.nomor,
+          status: "lunas",
+          dilunasi_pada: nowIso,
+        },
       };
     }
 
-    // 5. Catat ke Tabel Audit Log Secara Wajib (BR-12)
-    try {
-      await supabase.from("audit_log").insert({
-        pelaku_id: user.id,
-        aksi: "pelunasan",
-        nama_tabel: "pesanan_jual",
-        data_id: cleanPesananId,
-        nilai_lama: { status: "dikirim" },
-        nilai_baru: { status: "lunas", dilunasi_pada: nowIso, total: pesanan.total },
-        dibuat_pada: nowIso,
-      });
-    } catch (auditErr) {
-      console.warn("Pencatatan audit log pelunasan menemui kendala non-fatal:", auditErr);
+    // 5. Eksekusi RPC Remote catat_pembayaran (SECURITY DEFINER)
+    // Untuk pelunasan manual / tunai tempo (PRD Bab 6.1, BR-07, BR-12)
+    // Menggunakan client pengguna terautentikasi (supabase) - BUKAN service-role key.
+    // RPC ini secara atomik di database:
+    // - Memvalidasi peran Manajer pemanggil via auth.uid() sesi Supabase
+    // - Memvalidasi status pesanan saat ini wajib 'dikirim'
+    // - Memperbarui status ke 'lunas' dan mengisi 'dilunasi_pada'
+    // - Menulis jejak audit ke tabel public.audit_log (aksi: 'catat_pembayaran')
+    const { error: rpcError } = await supabase.rpc("catat_pembayaran", {
+      p_pesanan_id: cleanPesananId,
+    });
+
+    if (rpcError) {
+      return {
+        success: false,
+        error: `Gagal mencatat pelunasan pesanan di database: ${rpcError.message || "Terjadi kesalahan pada fungsi RPC."}`,
+      };
     }
+
+    const nowIso = new Date().toISOString();
 
     // 6. Revalidasi Seluruh Rute Terkait
     revalidatePath("/pesanan-jual");
@@ -1369,92 +1515,27 @@ export async function batalkanPesananJualAction(
         };
       }
 
-      // Ambil seluruh item pesanan untuk mengembalikan stok barang (BR-08)
-      const { data: itemsToReturn, error: fetchItemsErr } = await supabase
-        .from("item_pesanan_jual")
-        .select("barang_id, jumlah")
-        .eq("pesanan_jual_id", cleanPesananId);
-
-      if (fetchItemsErr) {
-        return {
-          success: false,
-          error: `Gagal memuat item untuk pengembalian stok: ${fetchItemsErr.message}`,
-        };
-      }
-
-      // Kembalikan stok barang satu per satu dan catat kartu stok jenis 'batal' (BR-08, BR-11)
-      if (itemsToReturn && itemsToReturn.length > 0) {
-        for (const item of itemsToReturn) {
-          const jumlahKembali = Number(item.jumlah) || 0;
-          if (jumlahKembali <= 0) continue;
-
-          // Ambil stok saat ini
-          const { data: bData } = await supabase
-            .from("barang")
-            .select("stok")
-            .eq("id", item.barang_id)
-            .maybeSingle();
-
-          const stokSaatIni = Number(bData?.stok) || 0;
-          const stokBaru = stokSaatIni + jumlahKembali;
-
-          // Perbarui stok barang
-          await supabase
-            .from("barang")
-            .update({
-              stok: stokBaru,
-              diperbarui_pada: nowIso,
-            })
-            .eq("id", item.barang_id);
-
-          // Catat mutasi stok jenis 'batal' (kuantitas positif karena stok kembali)
-          try {
-            await supabase.from("mutasi_stok").insert({
-              barang_id: item.barang_id,
-              jenis: "batal",
-              jumlah: jumlahKembali,
-              stok_sesudah: stokBaru,
-              nomor_dokumen: pesanan.nomor,
-              alasan: `Batal pesanan: ${cleanAlasan}`,
-              dibuat_oleh: user.id,
-              dibuat_pada: nowIso,
-            });
-          } catch (mutasiErr) {
-            console.warn("Gagal mencatat mutasi stok pembatalan:", mutasiErr);
-          }
+      // Eksekusi RPC Remote batalkan_pesanan_terkonfirmasi (SECURITY DEFINER)
+      // RPC ini secara atomik di database:
+      // - Memvalidasi peran Manajer (BR-08)
+      // - Memvalidasi panjang alasan minimal 10 karakter (BR-08)
+      // - Mengunci baris (FOR UPDATE) dan mengembalikan stok seluruh barang ke public.barang
+      // - Menulis kartu stok public.mutasi_stok jenis 'batal' dengan kuantitas positif (BR-11)
+      // - Memperbarui status pesanan menjadi 'dibatalkan' dan mencatat alasan_batal
+      // - Menulis jejak audit ke public.audit_log (aksi: 'pembatalan_pesanan', BR-12)
+      const { error: rpcCancelErr } = await supabase.rpc(
+        "batalkan_pesanan_terkonfirmasi",
+        {
+          p_pesanan_id: cleanPesananId,
+          p_alasan: cleanAlasan,
         }
-      }
+      );
 
-      // Perbarui status pesanan menjadi 'dibatalkan'
-      const { error: updateCancelErr } = await supabase
-        .from("pesanan_jual")
-        .update({
-          status: "dibatalkan",
-          dibatalkan_pada: nowIso,
-          alasan_batal: cleanAlasan,
-        })
-        .eq("id", cleanPesananId);
-
-      if (updateCancelErr) {
+      if (rpcCancelErr) {
         return {
           success: false,
-          error: `Gagal memperbarui status pembatalan di database: ${updateCancelErr.message}`,
+          error: `Gagal membatalkan pesanan terkonfirmasi: ${rpcCancelErr.message || "Terjadi kesalahan RPC."}`,
         };
-      }
-
-      // Catat ke Audit Log Secara Wajib (BR-12)
-      try {
-        await supabase.from("audit_log").insert({
-          pelaku_id: user.id,
-          aksi: "batal_pesanan_dikonfirmasi",
-          nama_tabel: "pesanan_jual",
-          data_id: cleanPesananId,
-          nilai_lama: { status: "dikonfirmasi" },
-          nilai_baru: { status: "dibatalkan", alasan_batal: cleanAlasan },
-          dibuat_pada: nowIso,
-        });
-      } catch (auditErr) {
-        console.warn("Pencatatan audit log pembatalan pesanan menemui kendala:", auditErr);
       }
 
       revalidatePath("/pesanan-jual");
@@ -1694,6 +1775,78 @@ export async function buatTagihanMayarAction(
 
     // Status: IN_DOUBT_STALE (Sewa kedaluwarsa atau token tidak konsisten, butuh rekonsiliasi)
     if (claimData.status === "IN_DOUBT_STALE") {
+      const cleanTotal = Math.round(Number(claimData.total));
+      const customerEmail = (emailPelangganInput || "").trim();
+
+      if (cleanTotal > 0) {
+        try {
+          const findRes = await findInvoiceByOrderRef(cleanPesananId, cleanTotal, customerEmail);
+          if (findRes.success && findRes.data) {
+            const autoInvoice = findRes.data;
+            const safePaymentUrl = autoInvoice.paymentUrl;
+            const urlValidation = validateMayarPaymentUrl(safePaymentUrl);
+            if (!urlValidation.valid || !urlValidation.cleanUrl) {
+              return {
+                success: false,
+                error: `URL tagihan Mayar dari invoice otomatis tidak valid: ${urlValidation.error || "Format tidak resmi"}. Status klaim dipertahankan.`,
+              };
+            }
+
+            const cleanUrlToSave = urlValidation.cleanUrl;
+            const adminSupabase = createAdminClient();
+
+            const { error: rekonErr } = await adminSupabase.rpc(
+              "rekonsiliasi_klaim_mayar",
+              {
+                p_pesanan_id: cleanPesananId,
+                p_tindakan: "TAUTKAN_INVOICE",
+                p_nominal: cleanTotal,
+                p_payment_id: autoInvoice.id,
+                p_payment_url: cleanUrlToSave,
+                p_payment_status: autoInvoice.status || "unpaid",
+                p_pelaku_id: pelakuId,
+                p_alasan: "Auto-reconciled: Ditemukan invoice sah di gateway Mayar saat klaim sewa menggantung.",
+              }
+            );
+
+            if (!rekonErr) {
+              revalidatePath("/pesanan-jual");
+              revalidatePath("/");
+              return {
+                success: true,
+                data: {
+                  id: cleanPesananId,
+                  nomor: String(claimData.nomor || ""),
+                  mayar_payment_id: autoInvoice.id,
+                  mayar_payment_url: cleanUrlToSave,
+                  mayar_status: autoInvoice.status || "unpaid",
+                },
+              };
+            }
+          } else {
+            // Invoice belum terbit di gateway Mayar -> batalkan sewa klaim kedaluwarsa secara aman
+            const adminSupabase = createAdminClient();
+            await adminSupabase.rpc("rekonsiliasi_klaim_mayar", {
+              p_pesanan_id: cleanPesananId,
+              p_tindakan: "BATALKAN_KLAIM",
+              p_nominal: null,
+              p_payment_id: null,
+              p_payment_url: null,
+              p_payment_status: "unpaid",
+              p_pelaku_id: pelakuId,
+              p_alasan: "Auto-reconciled: Pembatalan sewa kedaluwarsa setelah diverifikasi invoice belum terbit di Mayar.",
+            });
+            return {
+              success: false,
+              error:
+                "Sewa klaim sebelumnya yang kedaluwarsa telah dibersihkan secara aman. Silakan klik 'Lanjutkan & Terbitkan Tagihan' sekali lagi untuk menerbitkan tagihan.",
+            };
+          }
+        } catch (autoErr) {
+          console.error("[AUTO_RECONCILE_STALE_ERROR]", autoErr);
+        }
+      }
+
       return {
         success: false,
         error:
@@ -1815,7 +1968,7 @@ export async function buatTagihanMayarAction(
       };
     }
 
-    // 9. Panggil Mayar Headless API V1 via createSinglePayment
+    // 9. Panggil Mayar Headless API V2 via createSinglePayment dengan Unique Ref Pesanan
     const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
     const redirectUrl = `${baseUrl.replace(/\/+$/, "")}/pesanan-jual`;
 
@@ -1826,20 +1979,23 @@ export async function buatTagihanMayarAction(
         amount: cleanTotal,
         email: customerEmail,
         mobile: customerPhone,
-        description: `Tagihan pesanan ${claimData.nomor || cleanPesananId}`,
+        description: `Tagihan pesanan ${claimData.nomor || cleanPesananId} [REF:${cleanPesananId}]`,
         redirectUrl,
+        uniqueRef: cleanPesananId,
       });
     } catch (mayarEx) {
       console.error(
         `[MAYAR_API_EXCEPTION] Eksepsi saat menghubungi gateway Mayar untuk pesanan ${cleanPesananId}: ${mayarEx instanceof Error ? mayarEx.message : "Network/Runtime error"
         }`
       );
-      // Melepas sewa klaim agar pesanan tidak terkunci jika pemanggilan API gagal/timeout
-      await lepasKlaimMayarAman(supabase, cleanPesananId, claimToken);
+      // PENTING: Karena request HTTP telah dikirim ke Mayar dan gangguan koneksi / timeout terjadi pasca-pengiriman,
+      // invoice MUNGKIN telah tersimpan di gateway Mayar.
+      // DILARANG melepas sewa klaim secara otomatis untuk mencegah duplikasi tagihan.
+      // Status sewa klaim DIPERTAHANKAN agar admin/manajer dapat merekonsiliasi.
       return {
         success: false,
         error:
-          "Terjadi gangguan koneksi saat menghubungi gateway Mayar. Klaim sewa telah dilepas sehingga pembuatan tagihan dapat dicoba kembali.",
+          "Terjadi gangguan koneksi saat memverifikasi respons gateway Mayar. Status klaim dipertahankan untuk mencegah duplikasi tagihan. Silakan lakukan rekonsiliasi sebelum mencoba kembali.",
       };
     }
 
@@ -1848,13 +2004,25 @@ export async function buatTagihanMayarAction(
         `[MAYAR_API_ERROR] Gateway Mayar menolak/gagal membuat tagihan untuk pesanan ${cleanPesananId}: ${mayarRes.error || "Respons gagal dari Mayar"
         }`
       );
-      // Melepas sewa klaim jika gateway Mayar menolak pembuatan tagihan
-      await lepasKlaimMayarAman(supabase, cleanPesananId, claimToken);
+      // Evaluasi apakah penolakan merupakan penolakan validasi client definitif (4xx)
+      // ATAU kegagalan server / rekonsiliasi tidak pasti (5xx).
+      // Klaim HANYA aman dilepas jika gateway secara definitif menolak validasi client (HTTP 4xx / validasi input).
+      // Jika error server 5xx atau respons ambigu di mana invoice mungkin sudah terbit di gateway:
+      // Klaim WAJIB DIPERTAHANKAN untuk rekonsiliasi manual!
+      const isDefinitiveClientError =
+        mayarRes.error?.includes("HTTP 4") ||
+        mayarRes.error?.includes("wajib") ||
+        mayarRes.error?.includes("format valid");
+
+      if (isDefinitiveClientError) {
+        await lepasKlaimMayarAman(supabase, cleanPesananId, claimToken);
+      }
+
       return {
         success: false,
         error:
           mayarRes.error ||
-          "Gagal membuat tagihan pembayaran pada gateway Mayar. Klaim sewa telah dilepas.",
+          "Gagal membuat tagihan pembayaran pada gateway Mayar. Status klaim dipertahankan untuk rekonsiliasi.",
       };
     }
 
@@ -1886,19 +2054,20 @@ export async function buatTagihanMayarAction(
       };
     }
 
-    // Validasi domain resmi Mayar
-    const MAYAR_URL_REGEX =
-      /^https:\/\/([a-zA-Z0-9-]+\.)*(mayar\.link|mayar\.club|mayar\.id|myr\.id)\//i;
-    if (!paymentUrl || !MAYAR_URL_REGEX.test(paymentUrl)) {
+    // Validasi URL tagihan resmi Mayar menggunakan helper terstandarisasi
+    const urlValidation = validateMayarPaymentUrl(paymentUrl);
+    if (!urlValidation.valid || !urlValidation.cleanUrl) {
       console.error(
-        `[MAYAR_VERIFY_ERROR] URL tagihan Mayar untuk pesanan ${cleanPesananId} tidak valid atau bukan domain resmi.`
+        `[MAYAR_VERIFY_ERROR] URL tagihan Mayar untuk pesanan ${cleanPesananId} tidak valid: ${urlValidation.error}`
       );
       return {
         success: false,
-        error:
-          "Respons gateway Mayar menyertakan URL tagihan yang tidak valid. Status klaim dipertahankan untuk rekonsiliasi.",
+        error: `Respons gateway Mayar menyertakan URL tagihan yang tidak valid: ${urlValidation.error || "Format tidak resmi"}. Status klaim dipertahankan untuk rekonsiliasi.`,
       };
     }
+
+    const cleanPaymentUrl = urlValidation.cleanUrl;
+
     // 11. Simpan Metadata Tagihan via Admin Client (RPC privat simpan_tagihan_mayar)
     // Hak eksekusi simpan_tagihan_mayar telah di-REVOKE dari authenticated dan HANYA diizinkan untuk service_role.
     let adminSupabase: SupabaseClient;
@@ -1923,7 +2092,7 @@ export async function buatTagihanMayarAction(
         p_pesanan_id: cleanPesananId,
         p_claim_token: claimToken,
         p_payment_id: paymentId,
-        p_payment_url: paymentUrl,
+        p_payment_url: cleanPaymentUrl,
         p_nominal: cleanTotal,
         p_pelaku_id: pelakuId,
         p_payment_status: "unpaid",
@@ -2108,9 +2277,29 @@ export async function rekonsiliasiKlaimMayarAction(params: {
         };
       }
 
+      const rawPaymentUrl =
+        invoiceData.paymentUrl ||
+        (invoiceData.link?.startsWith("http") ? invoiceData.link : undefined);
+
+      if (!rawPaymentUrl) {
+        return {
+          success: false,
+          error:
+            "Verifikasi invoice gagal: gateway Mayar tidak mengembalikan tautan pembayaran (paymentUrl) yang valid untuk invoice ini.",
+        };
+      }
+
+      const urlValidation = validateMayarPaymentUrl(rawPaymentUrl);
+      if (!urlValidation.valid || !urlValidation.cleanUrl) {
+        return {
+          success: false,
+          error: `URL pembayaran invoice dari gateway Mayar tidak valid: ${urlValidation.error || "Format URL tidak resmi"}.`,
+        };
+      }
+
       nominalParam = cleanTotal;
       paymentIdParam = invoiceData.id;
-      paymentUrlParam = `https://mayar.link/${encodeURIComponent(invoiceData.id)}`;
+      paymentUrlParam = urlValidation.cleanUrl;
       paymentStatusParam = invoiceData.status || "unpaid";
     }
 
