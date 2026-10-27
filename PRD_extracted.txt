@@ -1,0 +1,493 @@
+Bootcamp AI Web Programming · Capstone Project
+
+PRD Aplikasi ERP Distribusi
+
+CV Sinar Abadi Niaga
+
+1. Latar Belakang
+
+CV Sinar Abadi Niaga adalah distributor kebutuhan toko kelontong di Bekasi. Perusahaan membeli barang dari 4 pemasok (minyak goreng, gula, tepung, mi instan, kopi sachet, dan sejenisnya), menyimpannya di satu gudang, lalu menjualnya ke sekitar 60 toko kelontong dan minimarket di Bekasi dan Jakarta Timur dengan pembayaran tempo.
+
+Saat ini pencatatan memakai nota tulis tangan dan satu file Excel yang dibuka bergantian oleh tiga orang. Akibatnya sering terjadi:
+
+dua staf penjualan menjanjikan stok yang sama ke dua toko, lalu barang ternyata kurang saat akan dikirim;
+
+toko yang utangnya sudah lewat jatuh tempo tetap dilayani pesanan baru;
+
+harga beli dari pemasok dan margin terlihat oleh semua orang yang membuka file Excel;
+
+staf memberi potongan harga terlalu besar sehingga ada barang yang terjual di bawah harga beli;
+
+pemilik tidak tahu omzet, margin, dan piutang secara cepat tanpa merekap manual.
+
+Aplikasi ERP Distribusi menggantikan nota dan file Excel dengan satu aplikasi web internal untuk pembelian ke pemasok, stok gudang, dan penjualan ke pelanggan.
+
+2. Tujuan
+
+Stok di aplikasi selalu sama dengan stok yang boleh dijual. Stok tidak pernah minus, termasuk saat dua pesanan dikonfirmasi bersamaan.
+
+Pesanan jual mengikuti alur status yang jelas dari draf sampai lunas, dan setiap peran hanya bisa menjalankan langkah miliknya.
+
+Pelanggan yang melewati batas kredit atau punya tagihan lewat jatuh tempo tidak bisa mendapat pesanan baru.
+
+Harga beli, harga pokok, dan margin hanya terlihat oleh Manajer.
+
+Manajer melihat omzet, margin, stok menipis, dan piutang dalam satu dashboard.
+
+3. Pengguna dan Peran
+
+Peran
+
+Siapa
+
+Yang bisa dilakukan
+
+Staf Penjualan
+
+2 orang tenaga penjualan
+
+Mengelola data pelanggan, membuat pesanan jual, memberi diskon sampai 10%, mengonfirmasi dan membatalkan draf miliknya, melihat stok dan harga jual
+
+Staf Gudang
+
+1 orang kepala gudang yang juga mengurus pembelian
+
+Mengubah data barang selain harga (nama, satuan, stok minimum, status aktif), mengelola pemasok, mengajukan pembelian, mencatat penerimaan barang, mengirim pesanan, melakukan penyesuaian stok
+
+Manajer
+
+Pemilik usaha
+
+Semua yang bisa dilakukan dua peran lain, ditambah menambah barang baru, menyetujui atau menolak pembelian, mengisi harga beli, mengubah harga jual dan batas kredit, memberi diskon sampai 25%, membatalkan pesanan yang sudah dikonfirmasi, mencatat pelunasan, melihat laporan margin, mengelola akun dan peran, membaca audit log
+
+Aplikasi ini internal. Tidak ada halaman publik dan tidak ada pendaftaran mandiri. Akun dibuat oleh Manajer.
+
+4. Aturan Bisnis
+
+Kode
+
+Aturan
+
+BR-01
+
+Kode barang unik. Harga jual lebih dari 0. Stok dan stok minimum berupa bilangan bulat dan tidak boleh negatif. Barang dengan stok sama dengan atau di bawah stok minimum ditandai "stok menipis". Hanya Manajer yang boleh menambah barang baru dan mengubah harga jual. Tidak ada peran yang boleh mengubah angka stok langsung; stok hanya berubah lewat konfirmasi, pembatalan, penerimaan, dan penyesuaian (BR-06, BR-08, BR-10, BR-11).
+
+BR-02
+
+Pesanan jual berisi 1 sampai 20 baris barang. Jumlah per baris bilangan bulat paling sedikit 1. Satu barang hanya boleh muncul satu kali dalam satu pesanan. Pelanggan dan barang yang dipilih harus berstatus aktif. Isi pesanan hanya bisa diubah selama status masih draf.
+
+BR-03
+
+Harga satuan pada pesanan selalu diambil dari harga jual barang saat baris disimpan dan tidak bisa diketik manual. Subtotal baris = jumlah dikali harga satuan dikali (100% dikurangi diskon), dibulatkan ke rupiah terdekat. Diskon diberikan per baris dalam persen. Staf Penjualan boleh memberi diskon 0% sampai 10%. Manajer boleh memberi diskon 0% sampai 25%. Diskon di atas 25% ditolak.
+
+BR-04
+
+Bila subtotal salah satu baris lebih rendah dari harga pokok barang dikali jumlahnya, hanya Manajer yang boleh mengonfirmasi pesanan itu. Untuk Staf Penjualan, konfirmasi ditolak dengan pesan "Harga di bawah batas, minta persetujuan Manajer" tanpa menyebut angka harga pokok.
+
+BR-05
+
+Setiap pelanggan punya batas kredit (Rp0 atau lebih) dan termin bayar 0, 7, 14, atau 30 hari. Pelanggan baru yang dibuat Staf Penjualan mendapat batas kredit Rp0 sampai Manajer mengubahnya. Piutang berjalan adalah total pesanan pelanggan yang berstatus dikonfirmasi atau dikirim. Konfirmasi ditolak bila piutang berjalan ditambah total pesanan baru melebihi batas kredit, atau bila pelanggan punya pesanan berstatus dikirim yang sudah lewat jatuh tempo.
+
+BR-06
+
+Saat pesanan dikonfirmasi, stok setiap barang di pesanan harus cukup. Stok semua baris dikurangi sekaligus. Bila satu barang saja kurang, seluruh konfirmasi gagal dan tidak ada stok yang berubah. Dua konfirmasi yang terjadi bersamaan untuk barang yang sama tidak boleh membuat stok minus; salah satu harus gagal bila stok tidak cukup untuk keduanya.
+
+BR-07
+
+Alur status pesanan jual mengikuti Bab 6. Staf Penjualan hanya boleh mengonfirmasi dan membatalkan draf yang ia buat sendiri. Staf Gudang mengubah dikonfirmasi menjadi dikirim. Saat dikirim, jatuh tempo diisi otomatis: tanggal kirim ditambah termin bayar pelanggan. Hanya Manajer yang mencatat pelunasan.
+
+BR-08
+
+Pesanan berstatus dikonfirmasi hanya boleh dibatalkan Manajer dengan alasan paling sedikit 10 karakter. Stok semua baris dikembalikan. Pesanan berstatus dikirim atau lunas tidak bisa dibatalkan.
+
+BR-09
+
+Staf Gudang atau Manajer mengajukan pembelian untuk satu barang ke satu pemasok dengan jumlah 1 sampai 10.000. Hanya Manajer yang menyetujui (sambil mengisi harga beli satuan lebih dari 0) atau menolak (dengan alasan paling sedikit 10 karakter). Pengajuan yang belum disetujui boleh dibatalkan oleh pengajunya.
+
+BR-10
+
+Penerimaan barang hanya untuk pembelian berstatus disetujui dan hanya satu kali. Jumlah diterima 1 sampai jumlah dipesan; kekurangan dari pemasok tidak ditunggu. Stok bertambah sejumlah barang yang diterima, dan harga pokok barang diperbarui menjadi harga beli pembelian tersebut.
+
+BR-11
+
+Setiap perubahan stok tercatat di kartu stok: jenis (masuk, keluar, batal, penyesuaian), jumlah, stok sesudah, nomor dokumen, pelaku, dan waktu. Penyesuaian stok (hasil hitung fisik) hanya oleh Staf Gudang atau Manajer, wajib alasan paling sedikit 10 karakter, dan stok hasil penyesuaian tidak boleh negatif.
+
+BR-12
+
+Harga beli, harga pokok, margin, dan laporan laba hanya boleh dilihat Manajer, baik di halaman maupun lewat API. Hanya Manajer yang mengubah peran akun dan batas kredit. Aksi berikut tercatat di audit log dengan nilai sebelum dan sesudah: perubahan harga jual, perubahan batas kredit, perubahan peran, persetujuan dan penolakan pembelian, pembatalan pesanan yang sudah dikonfirmasi, penyesuaian stok, dan pelunasan.
+
+5. User Story
+
+Kode
+
+User story
+
+Aturan terkait
+
+US-01
+
+Sebagai Staf Penjualan, saya ingin mencari barang dan melihat stok serta harga jualnya agar bisa menjawab pertanyaan toko saat itu juga.
+
+BR-01, BR-12
+
+US-02
+
+Sebagai Staf Penjualan, saya ingin membuat pesanan jual untuk pelanggan dengan beberapa barang dan diskon agar total yang harus dibayar toko langsung terlihat.
+
+BR-02, BR-03
+
+US-03
+
+Sebagai Staf Penjualan, saya ingin mengonfirmasi pesanan dan langsung tahu bila stok kurang, batas kredit terlampaui, atau ada tagihan lewat jatuh tempo.
+
+BR-04, BR-05, BR-06, BR-07
+
+US-04
+
+Sebagai Staf Gudang, saya ingin melihat daftar pesanan yang sudah dikonfirmasi dan menandainya terkirim agar jatuh tempo tagihan tercatat.
+
+BR-07
+
+US-05
+
+Sebagai Staf Gudang, saya ingin mengajukan pembelian ke pemasok saat stok menipis.
+
+BR-01, BR-09
+
+US-06
+
+Sebagai Manajer, saya ingin menyetujui atau menolak pengajuan pembelian dan mengisi harga belinya.
+
+BR-09, BR-12
+
+US-07
+
+Sebagai Staf Gudang, saya ingin mencatat barang yang datang dari pemasok agar stok bertambah sesuai jumlah yang benar-benar diterima.
+
+BR-10, BR-11
+
+US-08
+
+Sebagai Staf Gudang, saya ingin mencatat hasil hitung fisik dan melihat kartu stok setiap barang.
+
+BR-11, BR-12
+
+US-09
+
+Sebagai Manajer, saya ingin membatalkan pesanan yang sudah dikonfirmasi dan mencatat pelunasan dari pelanggan.
+
+BR-07, BR-08, BR-12
+
+US-10
+
+Sebagai Manajer, saya ingin melihat omzet, margin per minggu dan per barang, stok menipis, serta piutang per pelanggan.
+
+BR-05, BR-12
+
+6. Alur Status
+
+6.1 Pesanan Jual
+
+Status
+
+Arti
+
+draf
+
+Pesanan sedang disusun. Stok belum berkurang.
+
+dikonfirmasi
+
+Stok sudah dikurangi dan barang siap dikirim. Masuk piutang berjalan.
+
+dikirim
+
+Barang sudah keluar gudang. Jatuh tempo sudah terisi. Masuk piutang berjalan.
+
+lunas
+
+Pelanggan sudah membayar. Status akhir.
+
+dibatalkan
+
+Pesanan batal. Status akhir.
+
+Dari
+
+Ke
+
+Siapa yang boleh
+
+Syarat
+
+draf
+
+dikonfirmasi
+
+Staf Penjualan pembuat, Manajer
+
+BR-02 sampai BR-06 terpenuhi
+
+draf
+
+dibatalkan
+
+Staf Penjualan pembuat, Manajer
+
+Tidak ada
+
+dikonfirmasi
+
+dikirim
+
+Staf Gudang, Manajer
+
+Jatuh tempo diisi otomatis
+
+dikonfirmasi
+
+dibatalkan
+
+Manajer
+
+Alasan paling sedikit 10 karakter, stok kembali
+
+dikirim
+
+lunas
+
+Manajer
+
+Tanggal bayar dicatat
+
+Perpindahan lain, misalnya draf langsung ke dikirim atau lunas kembali ke dikirim, harus ditolak.
+
+6.2 Pembelian
+
+Dari
+
+Ke
+
+Siapa yang boleh
+
+Syarat
+
+(baru)
+
+diajukan
+
+Staf Gudang, Manajer
+
+Jumlah 1 sampai 10.000
+
+diajukan
+
+disetujui
+
+Manajer
+
+Harga beli satuan lebih dari 0
+
+diajukan
+
+ditolak
+
+Manajer
+
+Alasan paling sedikit 10 karakter
+
+diajukan
+
+dibatalkan
+
+Pengaju
+
+Tidak ada
+
+disetujui
+
+dibatalkan
+
+Manajer
+
+Barang belum diterima
+
+disetujui
+
+diterima
+
+Staf Gudang, Manajer
+
+Jumlah diterima 1 sampai jumlah dipesan
+
+7. Halaman
+
+Halaman
+
+Akses
+
+Isi
+
+Dashboard
+
+Semua peran (isi berbeda)
+
+Penjualan: pesanan saya per status, pelanggan dengan tagihan lewat jatuh tempo. Gudang: pesanan siap kirim, stok menipis, pembelian menunggu barang. Manajer: kartu omzet, margin, piutang, grafik omzet mingguan, pengajuan pembelian yang menunggu
+
+Barang dan Stok
+
+Semua peran
+
+Daftar barang, pencarian, label stok menipis, kartu stok per barang. Gudang mengubah data barang selain harga dan mencatat penyesuaian stok. Manajer menambah barang, mengubah harga jual, dan melihat kolom harga pokok
+
+Pelanggan
+
+Staf Penjualan, Manajer
+
+Daftar dan formulir pelanggan, piutang berjalan, status tagihan. Hanya Manajer mengubah batas kredit
+
+Pesanan Jual
+
+Semua peran
+
+Daftar pesanan dengan filter status, pelanggan, dan tanggal. Gudang hanya melihat pesanan dikonfirmasi ke atas
+
+Detail Pesanan Jual
+
+Semua peran sesuai haknya
+
+Formulir draf (pelanggan, baris barang, diskon), total, riwayat status, tombol status sesuai peran. Kolom harga pokok dan margin hanya untuk Manajer
+
+Pembelian
+
+Staf Gudang, Manajer
+
+Daftar pengajuan, formulir pengajuan, tombol setujui, tolak, batal, dan terima sesuai peran. Data pemasok di tab terpisah. Harga beli hanya untuk Manajer
+
+Laporan
+
+Manajer
+
+Omzet dan margin per minggu (grafik), margin per barang, piutang per pelanggan berdasarkan umur tagihan, ekspor CSV
+
+Pengaturan
+
+Manajer
+
+Akun dan peran pengguna, audit log dengan filter aksi dan tanggal
+
+8. Data Utama
+
+Rincian kolom ada di file ERD_ERP.pdf. Ringkasannya:
+
+Data
+
+Isi penting
+
+Profil akun
+
+nama, peran, status aktif; terhubung ke akun login
+
+Pemasok
+
+kode, nama, telepon, alamat, status aktif
+
+Pelanggan
+
+kode, nama toko, telepon, alamat, batas kredit, termin bayar, status aktif
+
+Barang
+
+kode, nama, satuan, harga jual, harga pokok (rahasia), stok, stok minimum, status aktif
+
+Pembelian
+
+nomor, pemasok, barang, jumlah dipesan, jumlah diterima, harga beli (rahasia), status, alasan tolak, pelaku tiap langkah
+
+Pesanan jual
+
+nomor, pelanggan, status, total, tanggal konfirmasi, kirim, jatuh tempo, lunas, alasan batal
+
+Baris pesanan jual
+
+barang, jumlah, harga satuan, diskon, subtotal, harga pokok saat konfirmasi (rahasia)
+
+Kartu stok
+
+barang, jenis, jumlah, stok sesudah, nomor dokumen, alasan, pelaku, waktu
+
+Audit log
+
+pelaku, aksi, data yang diubah, nilai sebelum, nilai sesudah, waktu
+
+9. Dashboard dan Laporan
+
+Kartu angka Manajer: omzet bulan berjalan (total pesanan dikirim dan lunas berdasarkan tanggal kirim), margin bulan berjalan dalam rupiah dan persen, piutang berjalan, jumlah barang stok menipis.
+
+Grafik batang omzet dan margin per minggu untuk 8 minggu terakhir.
+
+Tabel 10 barang dengan margin terbesar dan 5 barang dengan margin terkecil.
+
+Tabel piutang per pelanggan dengan kelompok umur: belum jatuh tempo, lewat 1 sampai 30 hari, lewat lebih dari 30 hari.
+
+Margin satu baris = subtotal baris dikurangi (harga pokok saat konfirmasi dikali jumlah). Pesanan yang dibatalkan tidak dihitung.
+
+Dashboard Staf Penjualan dan Staf Gudang tidak memuat angka margin atau harga pokok sama sekali.
+
+10. Kebutuhan Non-Fungsional
+
+Halaman Dashboard dan daftar Pesanan Jual tampil dalam 2 detik dengan 1.000 pesanan dan 200 barang.
+
+Semua halaman wajib masuk. Pengguna yang belum masuk diarahkan ke halaman Masuk. Akun nonaktif tidak bisa masuk.
+
+Aplikasi internal: semua halaman memakai noindex dan tidak muncul di mesin pencari.
+
+Hak akses diperiksa di database, bukan hanya dengan menyembunyikan tombol. Mengubah alamat halaman atau memanggil API langsung tetap ditolak.
+
+Angka uang disimpan tanpa pembulatan sampai rupiah penuh dan ditampilkan dengan format Rp1.250.000.
+
+Database dicadangkan otomatis setiap hari, dan data dapat diekspor ke CSV oleh Manajer.
+
+11. Fitur Nilai Tambah (opsional)
+
+Fitur di bawah ini tidak wajib dan hanya dikerjakan setelah Kriteria Selesai terpenuhi.
+
+Notifikasi email stok menipis. Setiap pagi Manajer dan Staf Gudang menerima email berisi daftar barang yang stoknya sama dengan atau di bawah stok minimum.
+
+Cetak surat jalan. Halaman Detail Pesanan Jual berstatus dikirim punya tampilan cetak (nomor pesanan, pelanggan, barang, jumlah, tanpa harga) untuk dibawa pengemudi.
+
+Tautan bayar piutang lewat Mayar. Manajer membuat tagihan Mayar (sandbox) untuk pesanan berstatus dikirim dan mengirim tautannya ke toko. Status pesanan berubah menjadi lunas hanya setelah aplikasi menerima kabar payment.received dan memeriksa ulang status tagihan ke Mayar.
+
+12. Akun Uji dan Data Contoh
+
+Akun uji dan data contoh ada di file Data_Contoh_ERP.xlsx. Semua akun memakai kata sandi latihan yang sama dan email berakhiran @sinarabadi.test. Data contoh mencakup 16 barang (1 nonaktif), 4 pemasok, 10 pelanggan, 19 pembelian, dan 45 pesanan jual selama 6 minggu (1 September sampai 14 Oktober 2026), serta beberapa kasus batas untuk pengujian, misalnya barang dengan stok tersisa 1, pelanggan yang hampir mencapai batas kredit, dan pelanggan dengan tagihan lewat jatuh tempo.
+
+13. Kriteria Selesai
+
+☐ Ketiga akun uji bisa masuk dan langsung melihat Dashboard sesuai perannya.
+
+☐ Staf Penjualan bisa membuat draf, menambah baris, memberi diskon 10%, dan mengonfirmasi. Diskon 11% ditolak (BR-03).
+
+☐ Konfirmasi pesanan yang stoknya kurang ditolak dan stok semua barang tidak berubah (BR-06).
+
+☐ Dua konfirmasi bersamaan untuk barang yang stoknya hanya cukup untuk satu pesanan menghasilkan satu berhasil dan satu gagal (BR-06).
+
+☐ Konfirmasi ditolak untuk pelanggan yang melewati batas kredit dan untuk pelanggan dengan tagihan lewat jatuh tempo (BR-05).
+
+☐ Staf Penjualan yang membuka API barang, pembelian, atau baris pesanan tidak mendapatkan harga pokok, harga beli, atau margin (BR-12).
+
+☐ Perpindahan status yang tidak ada di Bab 6 ditolak, termasuk bila dipanggil langsung lewat API (BR-07).
+
+☐ Penerimaan pembelian menambah stok dan memperbarui harga pokok; penerimaan kedua untuk pembelian yang sama ditolak (BR-10).
+
+☐ Kartu stok setiap barang cocok dengan angka stok saat ini (BR-11).
+
+☐ Audit log mencatat setiap aksi di BR-12 dengan nilai sebelum dan sesudah.
+
+☐ Laporan Manajer menampilkan grafik omzet dan margin mingguan dari data contoh.
+
+☐ Aplikasi tayang di Netlify, semua halaman noindex, dan minimal 10 test case yang disusun dari aturan bisnis lolos.
+
+14. Di Luar Lingkup
+
+Akuntansi lengkap (jurnal, buku besar, neraca), pajak dan faktur pajak, banyak gudang, retur barang, pembayaran sebagian (cicilan), pembelian dengan banyak barang dalam satu dokumen, produksi atau perakitan barang, satuan ganda (dus dan pcs), harga khusus per pelanggan, aplikasi ponsel native, dan integrasi dengan marketplace.
