@@ -65,6 +65,14 @@ export interface PembelianItem {
   } | null;
 }
 
+export interface RadarStokContextPO {
+  stokFisik: number;
+  stokMinimum: number;
+  incomingPO: number;
+  rekomendasiOrder: number;
+  satuan: string;
+}
+
 export interface BuatPengajuanPembelianInput {
   pemasok_id: string;
   barang_id: string;

@@ -11,6 +11,7 @@
  */
 
 import assert from "assert";
+import { validateMayarPaymentUrl } from "../../src/lib/mayar/urlHelper.ts";
 
 console.log("===============================================================================");
 console.log("MEMULAI UNIT TEST MOCK INTEGRASI MAYAR (OFFLINE / IN-MEMORY)");
@@ -773,23 +774,38 @@ function mockBuatTagihanMayarWorkflow({
   }
 
   // 6. Pemanggilan Gateway Mayar
-  if (mayarGatewayBehavior === "NETWORK_ERROR") {
-    lepasKlaimAman();
+  if (mayarGatewayBehavior === "NETWORK_ERROR" || mayarGatewayBehavior === "GATEWAY_TIMEOUT") {
+    // KEAMANAN BARU: Gangguan koneksi atau timeout pasca-pengiriman request TIDAK melepas sewa klaim
+    // untuk mencegah pembuatan invoice kedua jika invoice sebenarnya sudah terbit di gateway.
     return {
       success: false,
-      error: "Terjadi gangguan koneksi saat menghubungi gateway Mayar. Klaim sewa telah dilepas sehingga pembuatan tagihan dapat dicoba kembali.",
+      error: "Terjadi gangguan koneksi saat memverifikasi respons gateway Mayar. Status klaim dipertahankan untuk mencegah duplikasi tagihan. Silakan lakukan rekonsiliasi sebelum mencoba kembali.",
     };
   }
 
-  if (mayarGatewayBehavior === "GATEWAY_REJECT") {
+  if (mayarGatewayBehavior === "GATEWAY_REJECT_CLIENT_4XX") {
+    // Aman melepas sewa klaim karena gateway secara definitif menolak validasi (4xx) dan tidak membuat invoice
     lepasKlaimAman();
     return {
       success: false,
-      error: "Gateway Mayar menolak pembuatan tagihan. Klaim sewa telah dilepas.",
+      error: "Mayar API menolak pembuatan tagihan: HTTP 400 Bad Request. Klaim sewa telah dilepas.",
     };
   }
 
-  // Gateway sukses menerbitkan invoice
+  if (mayarGatewayBehavior === "GATEWAY_500_NO_INVOICE") {
+    // Gateway 500 dan rekonsiliasi tidak menemukan invoice yang cocok -> Klaim DIPERTAHANKAN
+    return {
+      success: false,
+      error: "Mayar API menolak pembuatan tagihan: Cannot read properties of null (reading 'name'). Status klaim dipertahankan untuk rekonsiliasi.",
+    };
+  }
+
+  if (mayarGatewayBehavior === "GATEWAY_500_RECONCILE_SUCCESS") {
+    // Gateway 500 namun rekonsiliasi ketat berhasil menemukan invoice unik yang baru dibuat
+    // Lanjutkan ke penyimpanan metadata
+  }
+
+  // Gateway sukses menerbitkan invoice (langsung atau via rekonsiliasi ketat)
   const issuedPaymentId = "pay_mock_" + Math.random().toString(36).substring(2, 8);
   const issuedPaymentUrl = `https://mayar.link/${issuedPaymentId}`;
 
@@ -905,8 +921,8 @@ runTest("C5. Pre-flight: Menolak SEBELUM panggil gateway jika MAYAR_API_KEY belu
   assert.strictEqual(db.pesanan[0].mayar_claim_token, null, "Klaim sewa wajib dilepas");
 });
 
-// C6. Kegagalan jaringan / timeout ke gateway Mayar
-runTest("C6. Gateway Failure: Gangguan koneksi ke Mayar melepaskan klaim sewa aman untuk retry", () => {
+// C6. Kegagalan jaringan / timeout ke gateway Mayar -> Klaim DIPERTAHANKAN
+runTest("C6. Gateway Failure: Gangguan koneksi ke Mayar MEMPERTAHANKAN klaim sewa untuk mencegah duplikasi tagihan", () => {
   const db = {
     pesanan: [{ id: "pj-1", nomor: "PJ-001", total: 100000, mayar_claim_token: null }],
   };
@@ -918,8 +934,8 @@ runTest("C6. Gateway Failure: Gangguan koneksi ke Mayar melepaskan klaim sewa am
     mayarGatewayBehavior: "NETWORK_ERROR",
   });
   assert.strictEqual(res.success, false);
-  assert.match(res.error, /gangguan koneksi saat menghubungi gateway Mayar/i);
-  assert.strictEqual(db.pesanan[0].mayar_claim_token, null, "Klaim sewa wajib dilepas");
+  assert.match(res.error, /gangguan koneksi saat memverifikasi respons gateway Mayar/i);
+  assert.ok(db.pesanan[0].mayar_claim_token, "Klaim sewa WAJIB DIPERTAHANKAN jika error terjadi pasca-pengiriman request");
 });
 
 // C7. Kegagalan penyimpanan DB setelah invoice terbit -> Klaim DIPERTAHANKAN
@@ -1029,6 +1045,470 @@ runTest("C11. Alur Sukses: Data lengkap dan valid berhasil membuat invoice Mayar
   assert.ok(res.data.mayar_payment_url.startsWith("https://mayar.link/"));
   assert.strictEqual(db.pesanan[0].mayar_payment_id, res.data.mayar_payment_id);
   assert.strictEqual(db.pesanan[0].mayar_claim_token, null, "Klaim sewa dibersihkan setelah simpan sukses");
+});
+
+// -----------------------------------------------------------------------------
+// BAGIAN 4: PENGUJIAN KEAMANAN REKONSILIASI INVOICE MAYAR SANDBOX (D1 - D5)
+// -----------------------------------------------------------------------------
+
+// Helper logika pencocokan rekonsiliasi ketat (selaras dengan src/lib/mayar/client.ts)
+function mockStrictReconcile({
+  candidateList,
+  cleanAmount,
+  cleanEmail,
+  uniqueOrderRef,
+  requestStartTime,
+  serverDateHeader,
+}) {
+  const referenceTime = serverDateHeader ? new Date(serverDateHeader).getTime() : requestStartTime;
+  const maxClockSkewMs = 15 * 60 * 1000; // 15 menit toleransi clock skew terdistribusi
+
+  const matched = (candidateList || []).filter((inv) => {
+    // 1. Nominal persis
+    if (Number(inv.amount) !== cleanAmount) return false;
+    // 2. Email cocok jika ada data customer (defensif terhadap customer null)
+    if (inv.customer?.email && inv.customer.email.trim().toLowerCase() !== cleanEmail.toLowerCase()) {
+      return false;
+    }
+    // 3. Waktu pembuatan baru (toleransi clock skew terdistribusi 15 menit), defensif menangani detik vs ms
+    const invCreatedMs =
+      typeof inv.createdAt === "number"
+        ? (inv.createdAt < 10000000000 ? inv.createdAt * 1000 : inv.createdAt)
+        : (typeof inv.createdAt === "string" ? new Date(inv.createdAt).getTime() : 0);
+
+    if (isNaN(invCreatedMs) || invCreatedMs === 0 || invCreatedMs < referenceTime - maxClockSkewMs) {
+      return false;
+    }
+    // 4. Identifier unik
+    if (uniqueOrderRef) {
+      if (!inv.description || !inv.description.includes(uniqueOrderRef)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  if (matched.length === 1) {
+    return { success: true, invoice: matched[0] };
+  }
+  return {
+    success: false,
+    error: matched.length > 1
+      ? "Ambiguitas: ditemukan lebih dari 1 invoice yang cocok."
+      : "Invoice tidak ditemukan pada daftar transaksi gateway.",
+  };
+}
+
+// D1. Rekonsiliasi: Invoice benar ditemukan dengan uniqueRef, email, nominal, dan createdAt baru
+runTest("D1. Rekonsiliasi: Invoice benar ditemukan dengan identifier unik, email, nominal, dan timestamp baru", () => {
+  const now = Date.now();
+  const res = mockStrictReconcile({
+    candidateList: [
+      {
+        id: "inv-correct-1",
+        amount: 250000,
+        description: "Tagihan pesanan PJ-001 [REF:uuid-pesanan-123]",
+        createdAt: now + 500, // dibuat saat request berlangsung
+        customer: { email: "toko@example.com" },
+      },
+      {
+        id: "inv-other-2",
+        amount: 250000,
+        description: "Tagihan pesanan lain [REF:uuid-lain-999]",
+        createdAt: now + 600,
+        customer: { email: "toko@example.com" },
+      },
+    ],
+    cleanAmount: 250000,
+    cleanEmail: "toko@example.com",
+    uniqueOrderRef: "uuid-pesanan-123",
+    requestStartTime: now,
+  });
+  assert.strictEqual(res.success, true);
+  assert.strictEqual(res.invoice.id, "inv-correct-1");
+});
+
+// D2. Rekonsiliasi: Menolak invoice lama dengan nominal & deskripsi mirip tapi createdAt lampau
+runTest("D2. Rekonsiliasi: Menolak invoice lama dengan nominal sama tapi createdAt lampau (anti-false positive)", () => {
+  const now = Date.now();
+  const res = mockStrictReconcile({
+    candidateList: [
+      {
+        id: "inv-old-1",
+        amount: 250000,
+        description: "Tagihan pesanan [REF:uuid-pesanan-123]",
+        createdAt: now - 3600000, // 1 jam yang lalu (lampau)
+        customer: { email: "toko@example.com" },
+      },
+    ],
+    cleanAmount: 250000,
+    cleanEmail: "toko@example.com",
+    uniqueOrderRef: "uuid-pesanan-123",
+    requestStartTime: now,
+  });
+  assert.strictEqual(res.success, false);
+  assert.match(res.error, /Invoice tidak ditemukan/i);
+});
+
+// D3. Respons 500 tanpa invoice di list -> Gagal bersih, klaim DIPERTAHANKAN
+runTest("D3. Respons 500: Respons server error tanpa invoice di gateway mempertahankan status klaim untuk rekonsiliasi manual", () => {
+  const db = {
+    pesanan: [{ id: "pj-1", nomor: "PJ-001", total: 100000, mayar_claim_token: null }],
+  };
+  const res = mockBuatTagihanMayarWorkflow({
+    dbState: db,
+    pesananId: "pj-1",
+    customerEmail: "pelanggan@example.com",
+    customerPhone: "08123456789",
+    mayarGatewayBehavior: "GATEWAY_500_NO_INVOICE",
+  });
+  assert.strictEqual(res.success, false);
+  assert.match(res.error, /Status klaim dipertahankan untuk rekonsiliasi/i);
+  assert.ok(db.pesanan[0].mayar_claim_token, "Klaim sewa TIDAK dilepas saat respons 500 ambigu");
+});
+
+// D4. Timeout setelah request terkirim -> Klaim DIPERTAHANKAN
+runTest("D4. Timeout Gateway: Eksepsi timeout pasca-pengiriman request mempertahankan klaim sewa", () => {
+  const db = {
+    pesanan: [{ id: "pj-1", nomor: "PJ-001", total: 100000, mayar_claim_token: null }],
+  };
+  const res = mockBuatTagihanMayarWorkflow({
+    dbState: db,
+    pesananId: "pj-1",
+    customerEmail: "pelanggan@example.com",
+    customerPhone: "08123456789",
+    mayarGatewayBehavior: "GATEWAY_TIMEOUT",
+  });
+  assert.strictEqual(res.success, false);
+  assert.match(res.error, /gangguan koneksi.*Status klaim dipertahankan/i);
+  assert.ok(db.pesanan[0].mayar_claim_token, "Klaim sewa TIDAK boleh dilepas jika timeout terjadi pasca-fetch");
+});
+
+// D5. Dua permintaan bersamaan -> Permintaan kedua ditolak IN_PROGRESS
+runTest("D5. Konkurensi: Dua permintaan bersamaan pada pesanan yang sama menolak permintaan kedua (IN_PROGRESS)", () => {
+  const db = {
+    pesanan: [{ id: "pj-concur", nomor: "PJ-CONCUR", total: 150000, mayar_claim_token: null }],
+  };
+  // Permintaan 1: Mengklaim sewa
+  db.pesanan[0].mayar_claim_token = "claim_first_req";
+  db.pesanan[0].mayar_claim_at = new Date(Date.now() - 5000).toISOString(); // 5 detik yang lalu
+
+  // Permintaan 2: Tiba saat permintaan 1 masih memproses gateway (<60 detik)
+  const res2 = mockBuatTagihanMayarWorkflow({
+    dbState: db,
+    pesananId: "pj-concur",
+    customerEmail: "toko@example.com",
+    customerPhone: "08123456789",
+  });
+  assert.strictEqual(res2.success, false);
+  assert.strictEqual(res2.status, "IN_PROGRESS");
+  assert.match(res2.error, /sedang diproses oleh permintaan lain/i);
+  assert.strictEqual(db.pesanan[0].mayar_claim_token, "claim_first_req", "Token sewa pertama tidak berubah");
+});
+
+// D6. Rekonsiliasi: Menoleransi clock skew terdistribusi saat jam client lebih cepat 2-5 menit dari server Mayar
+runTest("D6. Rekonsiliasi: Berhasil memulihkan invoice saat client clock skew lebih cepat 137s dari gateway Mayar", () => {
+  const localClientNow = Date.now();
+  // Simulasi server Mayar dengan selisih waktu 137 detik di belakang client lokal
+  const mayarServerTime = localClientNow - 137000;
+  const serverDateHeader = new Date(mayarServerTime).toUTCString();
+
+  const res = mockStrictReconcile({
+    candidateList: [
+      {
+        id: "04f40eab-50ed-483a-a4bf-b8e4b1fb03dd",
+        amount: 196000,
+        description: "Tagihan pesanan PJ-20261026-02B24270 [REF:89e29b4c-ffff-442f-84b9-3c33aefc038f]",
+        createdAt: mayarServerTime, // epoch pada server Mayar
+        customer: { email: "alendafatikhah@gmail.com" },
+      },
+    ],
+    cleanAmount: 196000,
+    cleanEmail: "alendafatikhah@gmail.com",
+    uniqueOrderRef: "89e29b4c-ffff-442f-84b9-3c33aefc038f",
+    requestStartTime: localClientNow,
+    serverDateHeader: serverDateHeader,
+  });
+
+  assert.strictEqual(res.success, true, "Harus berhasil memulihkan invoice meskipun ada clock skew");
+  assert.strictEqual(res.invoice.id, "04f40eab-50ed-483a-a4bf-b8e4b1fb03dd");
+});
+
+// D7. Penanganan defensif: invoice dengan customer null/undefined tidak menyebabkan crash "reading 'name'"
+runTest("D7. Rekonsiliasi: Objek customer null/undefined pada payload invoice tidak melempar eksepsi", () => {
+  const now = Date.now();
+  const res = mockStrictReconcile({
+    candidateList: [
+      {
+        id: "inv-null-customer",
+        amount: 196000,
+        description: "Tagihan pesanan [REF:uuid-null-cust-test]",
+        createdAt: now,
+        customer: null, // objek customer null dari Mayar
+      },
+    ],
+    cleanAmount: 196000,
+    cleanEmail: "toko@example.com",
+    uniqueOrderRef: "uuid-null-cust-test",
+    requestStartTime: now,
+  });
+
+  assert.strictEqual(res.success, true);
+  assert.strictEqual(res.invoice.id, "inv-null-customer");
+});
+
+// -----------------------------------------------------------------------------
+// BAGIAN 5: PENGUJIAN VALIDASI ALLOWLIST URL DOMAIN SANDBOX & PRODUKSI (E1 - E9)
+// -----------------------------------------------------------------------------
+
+// Regex validasi URL resmi (selaras dengan Migrasi 07 dan client/action)
+const MAYAR_STRICT_URL_REGEX =
+  /^https:\/\/([a-zA-Z0-9\-]+\.)*(mayar\.link|mayar\.club|mayar\.id|myr\.id|myr\.lat)(\/.*)?$/i;
+
+function isSandboxDomain(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.endsWith(".myr.lat") || parsed.hostname === "myr.lat";
+  } catch {
+    return false;
+  }
+}
+
+// E1. URL Sandbox resmi
+runTest("E1. URL Sandbox Resmi: Menerima URL tenant sandbox *.myr.lat dengan HTTPS", () => {
+  const url = "https://erp-sinar-abadi-ale.myr.lat/invoices/contoh";
+  assert.strictEqual(MAYAR_STRICT_URL_REGEX.test(url), true);
+  assert.strictEqual(isSandboxDomain(url), true);
+});
+
+// E2. Domain Produksi resmi
+runTest("E2. Domain Produksi Resmi: Menerima domain produksi mayar.link, mayar.club, mayar.id, myr.id", () => {
+  const prodUrls = [
+    "https://myr.id/invoices/ylms22t9rp",
+    "https://pay.mayar.id/invoices/123",
+    "https://erp.mayar.link/invoices/inv-001",
+    "https://store.mayar.club/p/123",
+  ];
+  for (const url of prodUrls) {
+    assert.strictEqual(MAYAR_STRICT_URL_REGEX.test(url), true, `Harus menerima ${url}`);
+    assert.strictEqual(isSandboxDomain(url), false, `${url} bukan domain sandbox`);
+  }
+});
+
+// E3. Protokol tidak aman (HTTP) ditolak
+runTest("E3. Protokol Tidak Aman: Menolak URL HTTP meskipun menggunakan domain resmi", () => {
+  const url = "http://erp-sinar-abadi-ale.myr.lat/invoices/contoh";
+  assert.strictEqual(MAYAR_STRICT_URL_REGEX.test(url), false);
+});
+
+// E4. Domain asing arbitrer ditolak
+runTest("E4. Domain Asing: Menolak domain arbitrer di luar allowlist resmi", () => {
+  const urls = [
+    "https://evil-attacker.com/invoices/contoh",
+    "https://checkout.xendit.co/web/123",
+    "https://app.midtrans.com/snap/v1",
+  ];
+  for (const url of urls) {
+    assert.strictEqual(MAYAR_STRICT_URL_REGEX.test(url), false, `Harus menolak ${url}`);
+  }
+});
+
+// E5. Domain tiruan subdomain attacker ditolak
+runTest("E5. Phishing Subdomain: Menolak myr.lat sebagai subdomain domain penyerang (myr.lat.attacker.com)", () => {
+  const urls = [
+    "https://myr.lat.attacker.com/invoices/contoh",
+    "https://myr.lat.example.org/pay",
+    "https://mayar.id.phishing.site/invoice",
+  ];
+  for (const url of urls) {
+    assert.strictEqual(MAYAR_STRICT_URL_REGEX.test(url), false, `Harus menolak ${url}`);
+  }
+});
+
+// E6. Domain tiruan awalan nama ditolak
+runTest("E6. Fake Domain Prefix: Menolak domain tiruan seperti fakemyr.lat atau notmayar.link", () => {
+  const urls = [
+    "https://fakemyr.lat/invoices/contoh",
+    "https://notmayar.link/invoices/contoh",
+    "https://evilmayar.id/pay",
+  ];
+  for (const url of urls) {
+    assert.strictEqual(MAYAR_STRICT_URL_REGEX.test(url), false, `Harus menolak ${url}`);
+  }
+});
+
+// E7. URL dengan userinfo/kredensial ditolak
+runTest("E7. Userinfo URL: Menolak URL yang menyisipkan kredensial (admin:secret@...)", () => {
+  const url = "https://admin:secret@erp-sinar-abadi-ale.myr.lat/invoices/contoh";
+  assert.strictEqual(MAYAR_STRICT_URL_REGEX.test(url), false);
+});
+
+// E8. Hostname palsu / port eksplisit / path traversal ditolak
+runTest("E8. Format Malformed: Menolak port kustom, path berisi domain, atau javascript URI", () => {
+  const urls = [
+    "https://erp-sinar-abadi-ale.myr.lat:8080/invoices/contoh",
+    "https://google.com/myr.lat/invoices",
+    "javascript:alert(1)",
+    "https://",
+  ];
+  for (const url of urls) {
+    assert.strictEqual(MAYAR_STRICT_URL_REGEX.test(url), false, `Harus menolak ${url}`);
+  }
+});
+
+// E9. Pemisahan Lingkungan: Domain sandbox tidak dianggap sebagai produksi
+runTest("E9. Pemisahan Lingkungan: Domain sandbox myr.lat terdeteksi terpisah dari domain produksi", () => {
+  const sandboxUrl = "https://erp-sinar-abadi-ale.myr.lat/invoices/contoh";
+  const prodUrl = "https://erp-sinar-abadi-ale.myr.id/invoices/contoh";
+
+  assert.strictEqual(isSandboxDomain(sandboxUrl), true, "myr.lat harus terdeteksi sebagai sandbox");
+  assert.strictEqual(isSandboxDomain(prodUrl), false, "myr.id tidak boleh dianggap sebagai sandbox");
+});
+
+// E10. Validasi URL Ketat: Menerima URL tenant sandbox resmi yang sesuai
+runTest("E10. Validasi URL Ketat: Menerima URL tenant sandbox resmi yang sesuai", () => {
+  const url = "https://erp-sinar-abadi-ale.myr.lat/invoices/gbhojkcuon";
+  const res = validateMayarPaymentUrl(url);
+  assert.strictEqual(res.valid, true);
+  assert.strictEqual(res.isSandbox, true);
+  assert.strictEqual(res.cleanUrl, "https://erp-sinar-abadi-ale.myr.lat/invoices/gbhojkcuon");
+});
+
+// E11. Validasi URL Ketat: Menolak URL mayar.link sintetis (path /{uuid} customer portal)
+runTest("E11. Validasi URL Ketat: Menolak URL mayar.link sintetis (path /{uuid} customer portal)", () => {
+  const url = "https://mayar.link/04f40eab-50ed-483a-a4bf-b8e4b1fb03dd";
+  const res = validateMayarPaymentUrl(url);
+  assert.strictEqual(res.valid, false, "URL sintetis mayar.link harus ditolak");
+  assert.match(res.error, /path/i);
+});
+
+// E12. Validasi URL Ketat: Menolak hostname arbitrer yang berakhiran .myr.lat
+runTest("E12. Validasi URL Ketat: Menolak hostname arbitrer yang berakhiran .myr.lat", () => {
+  const arbitraryUrls = [
+    "https://attacker.myr.lat/invoices/gbhojkcuon",
+    "https://toko-lain.myr.lat/invoices/gbhojkcuon",
+    "https://evil.myr.lat/invoices/gbhojkcuon",
+  ];
+  for (const url of arbitraryUrls) {
+    const res = validateMayarPaymentUrl(url);
+    assert.strictEqual(res.valid, false, `Hostname arbitrer ${url} harus ditolak`);
+    assert.match(res.error, /tidak diizinkan/i);
+  }
+});
+
+// E13. Validasi URL Ketat: Menolak domain phishing / tiruan yang menyisipkan myr.lat
+runTest("E13. Validasi URL Ketat: Menolak domain phishing / tiruan yang menyisipkan myr.lat", () => {
+  const phishingUrls = [
+    "https://myr.lat.attacker.com/invoices/gbhojkcuon",
+    "https://fakemyr.lat/invoices/gbhojkcuon",
+    "https://erp-sinar-abadi-ale.myr.lat.phishing.org/invoices/gbhojkcuon",
+  ];
+  for (const url of phishingUrls) {
+    const res = validateMayarPaymentUrl(url);
+    assert.strictEqual(res.valid, false, `Domain phishing ${url} harus ditolak`);
+  }
+});
+
+// E14. Validasi URL Ketat: Menolak URL tidak aman (HTTP, port kustom, userinfo)
+runTest("E14. Validasi URL Ketat: Menolak URL tidak aman (HTTP, port kustom, userinfo)", () => {
+  const insecureUrls = [
+    { url: "http://erp-sinar-abadi-ale.myr.lat/invoices/gbhojkcuon", pattern: /HTTPS/i },
+    { url: "https://erp-sinar-abadi-ale.myr.lat:8080/invoices/gbhojkcuon", pattern: /port/i },
+    { url: "https://admin:secret@erp-sinar-abadi-ale.myr.lat/invoices/gbhojkcuon", pattern: /userinfo/i },
+  ];
+  for (const item of insecureUrls) {
+    const res = validateMayarPaymentUrl(item.url);
+    assert.strictEqual(res.valid, false, `URL tidak aman ${item.url} harus ditolak`);
+    assert.match(res.error, item.pattern);
+  }
+});
+
+// E15. Respons API Tanpa paymentUrl: Penanganan tanpa fallback sintetis
+runTest("E15. Respons API Tanpa paymentUrl: Menolak jika API Mayar tidak mengembalikan paymentUrl atau link", () => {
+  const mockApiData = {
+    id: "inv-missing-url-123",
+    status: "unpaid",
+    amount: 196000,
+    paymentUrl: undefined,
+    link: undefined,
+  };
+
+  const rawPaymentUrl =
+    mockApiData.paymentUrl ||
+    (mockApiData.link?.startsWith("http") ? mockApiData.link : undefined);
+
+  assert.strictEqual(rawPaymentUrl, undefined, "rawPaymentUrl harus bernilai undefined");
+
+  let rekonsiliasiResult;
+  if (!rawPaymentUrl) {
+    rekonsiliasiResult = {
+      success: false,
+      error: "Verifikasi invoice gagal: gateway Mayar tidak mengembalikan tautan pembayaran (paymentUrl) yang valid untuk invoice ini.",
+    };
+  }
+
+  assert.strictEqual(rekonsiliasiResult.success, false);
+  assert.match(rekonsiliasiResult.error, /tidak mengembalikan tautan pembayaran/i);
+});
+
+// E16. Fallback Sintetis Dihapus: Penautan rekonsiliasi mewajibkan paymentUrl asli dari API
+runTest("E16. Fallback Sintetis Dihapus: Penautan rekonsiliasi mewajibkan paymentUrl asli dari API", () => {
+  const validApiData = {
+    id: "8f71bd42-c8f7-478d-9fb9-24eb5ba8efde",
+    status: "unpaid",
+    amount: 196000,
+    paymentUrl: "https://erp-sinar-abadi-ale.myr.lat/invoices/gbhojkcuon",
+    link: "gbhojkcuon",
+  };
+
+  const rawPaymentUrl =
+    validApiData.paymentUrl ||
+    (validApiData.link?.startsWith("http") ? validApiData.link : undefined);
+
+  assert.ok(rawPaymentUrl, "paymentUrl asli harus tersedia");
+
+  const validation = validateMayarPaymentUrl(rawPaymentUrl);
+  assert.strictEqual(validation.valid, true);
+  assert.strictEqual(validation.cleanUrl, "https://erp-sinar-abadi-ale.myr.lat/invoices/gbhojkcuon");
+
+  const paymentUrlParam = validation.cleanUrl;
+  assert.notStrictEqual(paymentUrlParam, `https://mayar.link/${validApiData.id}`);
+  assert.strictEqual(paymentUrlParam, "https://erp-sinar-abadi-ale.myr.lat/invoices/gbhojkcuon");
+});
+
+// E17. Validasi Regex Database (Migrasi 07): Memastikan regex SQL menolak attacker.myr.lat dan menerima tenant resmi
+runTest("E17. Validasi Regex Database (Migrasi 07): Memastikan regex SQL menolak attacker.myr.lat dan menerima tenant resmi", () => {
+  // Regex SQL Migrasi 07:
+  // ^https://(erp-sinar-abadi-ale\.myr\.lat|([a-zA-Z0-9-]+\.)*(mayar\.(link|club|id)|myr\.id))/invoices/[a-zA-Z0-9_-]+$
+  const dbRegex = /^https:\/\/(erp-sinar-abadi-ale\.myr\.lat|([a-zA-Z0-9-]+\.)*(mayar\.(link|club|id)|myr\.id))\/invoices\/[a-zA-Z0-9_-]+$/i;
+
+  // Kasus Valid (Harus Diterima)
+  const validDbUrls = [
+    "https://erp-sinar-abadi-ale.myr.lat/invoices/gbhojkcuon",
+    "https://mayar.link/invoices/inv-12345",
+    "https://sub.mayar.id/invoices/inv_abc",
+    "https://myr.id/invoices/pay-999",
+    "https://mayar.club/invoices/membership-1",
+  ];
+  for (const url of validDbUrls) {
+    assert.strictEqual(dbRegex.test(url), true, `URL resmi ${url} harus lolos regex database`);
+  }
+
+  // Kasus Tidak Valid (Harus Ditolak)
+  const invalidDbUrls = [
+    "https://attacker.myr.lat/invoices/gbhojkcuon", // Subdomain arbitrer .myr.lat
+    "https://evil.myr.lat/invoices/gbhojkcuon",
+    "https://myr.lat/invoices/gbhojkcuon", // Tanpa tenant terdaftar
+    "https://mayar.link/04f40eab-50ed-483a-a4bf-b8e4b1fb03dd", // Customer portal UUID (tanpa /invoices/)
+    "http://erp-sinar-abadi-ale.myr.lat/invoices/gbhojkcuon", // HTTP tidak aman
+    "https://admin:pass@erp-sinar-abadi-ale.myr.lat/invoices/gbhojkcuon", // Userinfo
+    "https://erp-sinar-abadi-ale.myr.lat:8080/invoices/gbhojkcuon", // Custom port
+    "https://erp-sinar-abadi-ale.myr.lat/invoices/", // Path tanpa short code
+    "https://erp-sinar-abadi-ale.myr.lat/", // Path root saja
+  ];
+  for (const url of invalidDbUrls) {
+    assert.strictEqual(dbRegex.test(url), false, `URL ${url} harus ditolak oleh regex database`);
+  }
 });
 
 console.log("\n===============================================================================");

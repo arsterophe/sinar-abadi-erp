@@ -7,6 +7,8 @@ import DashboardClient from "@/components/dashboard/DashboardClient";
 import { getManagerDashboardMetrics, ManagerDashboardMetrics } from "@/lib/dashboard/getManagerMetrics";
 import { getWarehouseDashboardMetrics, WarehouseDashboardMetrics } from "@/lib/dashboard/getWarehouseMetrics";
 import { getSalesDashboardMetrics, SalesDashboardMetrics } from "@/lib/dashboard/getSalesMetrics";
+import { getAnalyticsData } from "@/lib/dashboard/getAnalyticsData";
+import { AnalyticsPayload } from "@/types/analytics";
 
 // Rute dashboard dilindungi di server menggunakan sesi dinamis & verifikasi profil Supabase.
 // Menonaktifkan instant prerendering pada route dinamis ini sesuai konvensi Next.js 16.
@@ -59,6 +61,14 @@ export default async function HomePage() {
   let warehouseMetrics: WarehouseDashboardMetrics | null = null;
   let salesMetrics: SalesDashboardMetrics | null = null;
 
+  // Ambil data analitik inisial (default: 30 hari terakhir) dengan otorisasi peran server
+  const initialAnalytics: AnalyticsPayload = await getAnalyticsData(
+    supabase,
+    { preset: "30_hari" },
+    profile.peran,
+    user.id
+  );
+
   if (profile.peran === "manajer") {
     // Manajer memiliki wewenang eksekutif & operasional penuh
     // Dapat melihat metrik eksekutif, serta pratinjau gudang dan penjualan perusahaan
@@ -85,6 +95,7 @@ export default async function HomePage() {
       managerMetrics={managerMetrics}
       warehouseMetrics={warehouseMetrics}
       salesMetrics={salesMetrics}
+      initialAnalytics={initialAnalytics}
     />
   );
 }

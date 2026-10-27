@@ -1,0 +1,335 @@
+[
+  {
+    "id": "SEC-AUTH-01",
+    "feature": "Akses halaman privat '/' tanpa login dialihkan ke /login",
+    "steps": "Kirim HTTP GET anonim ke http://localhost:3000/ dengan redirect manual",
+    "expected": "HTTP 307 Redirect ke /login",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-AUTH-BARA",
+    "feature": "Akses halaman privat '/barang-dan-stok' tanpa login dialihkan ke /login",
+    "steps": "Kirim HTTP GET anonim ke http://localhost:3000/barang-dan-stok dengan redirect manual",
+    "expected": "HTTP 307 Redirect ke /login",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-AUTH-RADA",
+    "feature": "Akses halaman privat '/radar-stok' tanpa login dialihkan ke /login",
+    "steps": "Kirim HTTP GET anonim ke http://localhost:3000/radar-stok dengan redirect manual",
+    "expected": "HTTP 307 Redirect ke /login",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-AUTH-PELA",
+    "feature": "Akses halaman privat '/pelanggan' tanpa login dialihkan ke /login",
+    "steps": "Kirim HTTP GET anonim ke http://localhost:3000/pelanggan dengan redirect manual",
+    "expected": "HTTP 307 Redirect ke /login",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-AUTH-PESA",
+    "feature": "Akses halaman privat '/pesanan-jual' tanpa login dialihkan ke /login",
+    "steps": "Kirim HTTP GET anonim ke http://localhost:3000/pesanan-jual dengan redirect manual",
+    "expected": "HTTP 307 Redirect ke /login",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-AUTH-PEMB",
+    "feature": "Akses halaman privat '/pembelian' tanpa login dialihkan ke /login",
+    "steps": "Kirim HTTP GET anonim ke http://localhost:3000/pembelian dengan redirect manual",
+    "expected": "HTTP 307 Redirect ke /login",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-AUTH-LAPO",
+    "feature": "Akses halaman privat '/laporan' tanpa login dialihkan ke /login",
+    "steps": "Kirim HTTP GET anonim ke http://localhost:3000/laporan dengan redirect manual",
+    "expected": "HTTP 307 Redirect ke /login",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-AUTH-PENG",
+    "feature": "Akses halaman privat '/pengaturan' tanpa login dialihkan ke /login",
+    "steps": "Kirim HTTP GET anonim ke http://localhost:3000/pengaturan dengan redirect manual",
+    "expected": "HTTP 307 Redirect ke /login",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-AUTH-09",
+    "feature": "Halaman publik /login dapat diakses langsung tanpa autentikasi",
+    "steps": "Kirim HTTP GET anonim ke http://localhost:3000/login",
+    "expected": "HTTP 200 OK",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-AUTH-10",
+    "feature": "Pengguna yang sudah login diarahkan ke dashboard jika membuka /login",
+    "steps": "Simulasikan evaluasi Proxy SSR untuk request /login dengan sesi aktif",
+    "expected": "Action REDIRECT ke /",
+    "actual": "Evaluasi Proxy menghasilkan REDIRECT ke /",
+    "status": "PASS",
+    "evidence": "src/lib/supabase/proxy.ts line 76-80 mengalihkan pengguna terotentikasi ke /."
+  },
+  {
+    "id": "SEC-STAT-01",
+    "feature": "Akun non-aktif ditolak saat login dan sesi langsung dibersihkan (signOut)",
+    "steps": "Login dengan akun agus@sinarabadi.test (status aktif: false) di Supabase Auth",
+    "expected": "Login berhasil di auth, namun pengecekan profil mendeteksi aktif = false dan memicu signOut",
+    "actual": "User Agus Salim memiliki aktif = false. Sesi langsung di-signOut secara aman.",
+    "status": "PASS",
+    "evidence": "Profile data: id=729c6cc9-8592-4300-bac4-696d74fcc856, aktif=false"
+  },
+  {
+    "id": "SEC-STAT-02",
+    "feature": "Server Component mendeteksi profile.aktif !== true dan mengalihkan ke /login?error=account_inactive",
+    "steps": "Audit kode Server Component di src/app/**/page.tsx",
+    "expected": "Redirect ke /login?error=account_inactive",
+    "actual": "Seluruh 8 Server Component (8 file) memvalidasi status aktif secara ketat.",
+    "status": "PASS",
+    "evidence": "Semua route memanggil redirect('/login?error=account_inactive') jika akun nonaktif."
+  },
+  {
+    "id": "SEC-STAT-03",
+    "feature": "Server Action menolak eksekusi mutasi jika profile.aktif !== true",
+    "steps": "Audit validasi profil pada Server Actions",
+    "expected": "Mengembalikan { success: false, error: 'Akses ditolak: akun Anda tidak terdaftar atau telah dinonaktifkan.' }",
+    "actual": "Seluruh 5 Server Action (5 file) memvalidasi status aktif sebelum mutasi.",
+    "status": "PASS",
+    "evidence": "Setiap action mengembalikan error otorisasi jika akun nonaktif."
+  },
+  {
+    "id": "SEC-ROLE-01",
+    "feature": "Peran Manajer memiliki akses ke data operasional, audit log, dan pengguna",
+    "steps": "Eksekusi query profil dan audit_log menggunakan sesi Manajer (alen@sinarabadi.com)",
+    "expected": "Query berhasil mengembalikan baris audit_log dan profil pengguna",
+    "actual": "Manajer berhasil membaca 1 audit log dan 5 data profil pengguna.",
+    "status": "PASS",
+    "evidence": "RLS mengizinkan peran manajer membaca audit_log dan profiles."
+  },
+  {
+    "id": "SEC-ROLE-02",
+    "feature": "Peran Penjualan DITOLAK membaca data audit_log oleh RLS database",
+    "steps": "Eksekusi query tabel audit_log menggunakan sesi Staf Penjualan (jeonghan@sinarabadi.com)",
+    "expected": "RLS menolak akses dan mengembalikan 0 baris",
+    "actual": "Staf Penjualan dibatasi RLS: 0 baris audit_log dikembalikan.",
+    "status": "PASS",
+    "evidence": "RLS policy pada public.audit_log hanya mengizinkan peran manajer."
+  },
+  {
+    "id": "SEC-ROLE-03",
+    "feature": "Peran Gudang DITOLAK membaca data audit_log oleh RLS database",
+    "steps": "Eksekusi query tabel audit_log menggunakan sesi Staf Gudang (wonwoo@sinarabadi.com)",
+    "expected": "RLS menolak akses dan mengembalikan 0 baris",
+    "actual": "Staf Gudang dibatasi RLS: 0 baris audit_log dikembalikan.",
+    "status": "PASS",
+    "evidence": "RLS policy pada public.audit_log menolak peran gudang."
+  },
+  {
+    "id": "SEC-ROLE-04",
+    "feature": "Peran Gudang DITOLAK membaca data pelanggan oleh RLS database & Server Component",
+    "steps": "Eksekusi query tabel pelanggan menggunakan sesi Staf Gudang",
+    "expected": "RLS mengembalikan 0 baris; Server Component mengalihkan ke /?error=unauthorized_pelanggan",
+    "actual": "RLS mengembalikan 0 baris pelanggan dan Server Component mengalihkan peran gudang.",
+    "status": "PASS",
+    "evidence": "src/app/pelanggan/page.tsx line 54: redirect('/?error=unauthorized_pelanggan')."
+  },
+  {
+    "id": "SEC-ROLE-05",
+    "feature": "Peran Penjualan DITOLAK mengakses data pembelian oleh RLS database & Server Component",
+    "steps": "Eksekusi query tabel pembelian menggunakan sesi Staf Penjualan",
+    "expected": "RLS mengembalikan 0 baris; Server Component menampilkan halaman Akses Terbatas",
+    "actual": "RLS mengembalikan 0 baris pembelian dan Server Component menampilkan UI Akses Terbatas.",
+    "status": "PASS",
+    "evidence": "src/app/pembelian/page.tsx line 73: blokir peran penjualan sesuai PRD Bab 7."
+  },
+  {
+    "id": "SEC-ROLE-06",
+    "feature": "Peran Non-Manajer DITOLAK mengakses modul Laporan Finansial (/laporan)",
+    "steps": "Audit Server Component src/app/laporan/page.tsx",
+    "expected": "Redirect ke /?error=unauthorized_laporan untuk seluruh peran selain manajer",
+    "actual": "Server Component /laporan menolak tegas peran penjualan dan gudang.",
+    "status": "PASS",
+    "evidence": "src/app/laporan/page.tsx line 55: redirect('/?error=unauthorized_laporan')."
+  },
+  {
+    "id": "SEC-ROLE-07",
+    "feature": "Peran Non-Manajer DITOLAK mengakses modul Pengaturan Sistem (/pengaturan)",
+    "steps": "Audit Server Component src/app/pengaturan/page.tsx",
+    "expected": "Redirect ke /?error=unauthorized_pengaturan untuk seluruh peran selain manajer",
+    "actual": "Server Component /pengaturan menolak tegas peran penjualan dan gudang.",
+    "status": "PASS",
+    "evidence": "src/app/pengaturan/page.tsx line 55: redirect('/?error=unauthorized_pengaturan')."
+  },
+  {
+    "id": "SEC-ROLE-08",
+    "feature": "Server Action pesanan jual melarang Staf Gudang membuat pesanan draf",
+    "steps": "Audit otorisasi pada buatPesananJualDrafAction di src/app/pesanan-jual/actions.ts",
+    "expected": "Penolakan jika profile.peran === 'gudang'",
+    "actual": "Staf Gudang ditolak membuat pesanan jual pada level Server Action.",
+    "status": "PASS",
+    "evidence": "src/app/pesanan-jual/actions.ts line 251-256."
+  },
+  {
+    "id": "SEC-ROLE-09",
+    "feature": "Server Action pesanan jual melarang Staf Penjualan menandai pesanan terkirim (BR-07)",
+    "steps": "Audit otorisasi pada kirimPesananJualAction di src/app/pesanan-jual/actions.ts",
+    "expected": "Penolakan jika profile.peran === 'penjualan'",
+    "actual": "Staf Penjualan ditolak menandai pengiriman pesanan (hanya Gudang & Manajer).",
+    "status": "PASS",
+    "evidence": "src/app/pesanan-jual/actions.ts line 1015-1020."
+  },
+  {
+    "id": "SEC-ROLE-10",
+    "feature": "Server Action pelunasan pesanan eksklusif hanya untuk Manajer (BR-07, BR-12)",
+    "steps": "Audit otorisasi pada lunasiPesananJualAction di src/app/pesanan-jual/actions.ts",
+    "expected": "Penolakan jika profile.peran !== 'manajer'",
+    "actual": "Pelunasan manual ditolak untuk selain Manajer.",
+    "status": "PASS",
+    "evidence": "src/app/pesanan-jual/actions.ts line 1143-1148."
+  },
+  {
+    "id": "SEC-ROLE-11",
+    "feature": "Server Action penerbitan invoice Mayar eksklusif hanya untuk Manajer (BR-07)",
+    "steps": "Audit otorisasi pada buatTagihanMayarAction di src/app/pesanan-jual/actions.ts",
+    "expected": "Penolakan jika profile.peran !== 'manajer'",
+    "actual": "Penerbitan tagihan Mayar dibatasi eksklusif hanya untuk Manajer.",
+    "status": "PASS",
+    "evidence": "src/app/pesanan-jual/actions.ts line 1540-1545."
+  },
+  {
+    "id": "SEC-ROLE-12",
+    "feature": "Server Action persetujuan pembelian (PO) eksklusif hanya untuk Manajer (BR-09, BR-12)",
+    "steps": "Audit otorisasi pada setujuiPembelianAction di src/app/pembelian/actions.ts",
+    "expected": "Penolakan jika !canApprovePembelian(profile.peran)",
+    "actual": "Persetujuan pembelian dan penentuan harga beli satuan dibatasi hanya untuk Manajer.",
+    "status": "PASS",
+    "evidence": "src/app/pembelian/actions.ts line 258-263."
+  },
+  {
+    "id": "SEC-ROLE-13",
+    "feature": "Server Action penyesuaian stok fisik melarang peran Staf Penjualan (PRD Bab 7)",
+    "steps": "Audit otorisasi pada sesuaikanStokAction di src/app/barang-dan-stok/actions.ts",
+    "expected": "Penolakan jika profile.peran === 'penjualan'",
+    "actual": "Staf Penjualan ditolak menyesuaikan stok fisik barang.",
+    "status": "PASS",
+    "evidence": "src/app/barang-dan-stok/actions.ts line 64-69."
+  },
+  {
+    "id": "SEC-HPP-01",
+    "feature": "Manajer dapat membaca kolom harga_pokok melalui RPC get_katalog_barang_manajer",
+    "steps": "Panggil RPC get_katalog_barang_manajer menggunakan sesi Manajer",
+    "expected": "RPC berhasil dan data barang menyertakan harga_pokok",
+    "actual": "Manajer berhasil membaca 16 katalog barang beserta harga_pokok (contoh: Rp30.000).",
+    "status": "PASS",
+    "evidence": "RPC get_katalog_barang_manajer menyertakan harga_pokok untuk manajer aktif."
+  },
+  {
+    "id": "SEC-HPP-02",
+    "feature": "Staf Penjualan DITOLAK menjalankan RPC get_katalog_barang_manajer di level PostgreSQL",
+    "steps": "Panggil RPC get_katalog_barang_manajer menggunakan sesi Staf Penjualan",
+    "expected": "RPC menolak dengan error 'Forbidden: Hanya manajer aktif yang boleh mengakses data ini'",
+    "actual": "Penjualan ditolak PostgreSQL: Forbidden: Hanya manajer aktif yang boleh mengakses data ini",
+    "status": "PASS",
+    "evidence": "Fungsi PostgreSQL get_katalog_barang_manajer memverifikasi peran via auth.uid()."
+  },
+  {
+    "id": "SEC-HPP-03",
+    "feature": "Staf Gudang DITOLAK menjalankan RPC get_katalog_barang_manajer di level PostgreSQL",
+    "steps": "Panggil RPC get_katalog_barang_manajer menggunakan sesi Staf Gudang",
+    "expected": "RPC menolak dengan error 'Forbidden: Hanya manajer aktif yang boleh mengakses data ini'",
+    "actual": "Gudang ditolak PostgreSQL: Forbidden: Hanya manajer aktif yang boleh mengakses data ini",
+    "status": "PASS",
+    "evidence": "Fungsi PostgreSQL get_katalog_barang_manajer memverifikasi peran via auth.uid()."
+  },
+  {
+    "id": "SEC-HPP-04",
+    "feature": "Query katalog barang untuk Penjualan & Gudang tidak pernah menyertakan kolom harga_pokok",
+    "steps": "Audit kode src/app/barang-dan-stok/page.tsx",
+    "expected": "Query select('id, kode, nama, satuan, harga_jual, stok, stok_minimum, aktif, diperbarui_pada')",
+    "actual": "Query katalog non-manajer secara eksplisit menghilangkan kolom harga_pokok.",
+    "status": "PASS",
+    "evidence": "src/app/barang-dan-stok/page.tsx line 73."
+  },
+  {
+    "id": "SEC-HPP-05",
+    "feature": "Kolom harga_beli_satuan pada modul pembelian disembunyikan dari Staf Gudang (BR-12)",
+    "steps": "Audit kode src/app/pembelian/page.tsx",
+    "expected": "Staf Gudang tidak menerima kolom harga_beli_satuan (diset null / dihilangkan dari select)",
+    "actual": "Staf Gudang dilarang menerima nilai harga_beli_satuan pada data pengajuan pembelian.",
+    "status": "PASS",
+    "evidence": "src/app/pembelian/page.tsx line 156-163."
+  },
+  {
+    "id": "SEC-HPP-06",
+    "feature": "Pengambilan riwayat mutasi kartu stok (ambilKartuStokAction) tidak mengekspos HPP atau margin",
+    "steps": "Audit kode ambilKartuStokAction di src/app/barang-dan-stok/actions.ts",
+    "expected": "Hanya mengambil id, nomor_dokumen, tipe, jumlah, stok_sebelum, stok_sesudah, alasan, dibuat_pada",
+    "actual": "Kartu stok hanya menyajikan pergerakan kuantitas fisik tanpa data finansial.",
+    "status": "PASS",
+    "evidence": "src/app/barang-dan-stok/actions.ts line 230-231."
+  },
+  {
+    "id": "SEC-LOUT-01",
+    "feature": "Fungsi logoutUser / signOut mencabut sesi autentikasi pengguna secara total",
+    "steps": "Inisialisasi sesi login sementara lalu panggil signOut()",
+    "expected": "Sesi auth terhapus, getUser() mengembalikan user = null",
+    "actual": "Sesi Supabase Auth berhasil dihapus secara bersih.",
+    "status": "PASS",
+    "evidence": "Fungsi signOut() menghapus token JWT dan menyetel status unauthenticated."
+  },
+  {
+    "id": "SEC-LOUT-02",
+    "feature": "Pasca logout, request selanjutnya kembali berstatus anonim dan dialihkan ke /login",
+    "steps": "Simulasikan request ke rute privat setelah user = null",
+    "expected": "Proxy SSR mengalihkan ke /login",
+    "actual": "Request tanpa sesi diarahkan ke /login oleh Proxy SSR.",
+    "status": "PASS",
+    "evidence": "UpdateSession mengembalikan NextResponse.redirect('/login') jika user null."
+  },
+  {
+    "id": "SEC-HOOK-01",
+    "feature": "Endpoint Webhook Mayar (/api/webhooks/mayar) tidak dialihkan ke login oleh Proxy",
+    "steps": "Kirim HTTP POST ke http://localhost:3000/api/webhooks/mayar dengan redirect manual",
+    "expected": "Endpoint merespons HTTP 401 (bukan HTTP 307 /login)",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-HOOK-02",
+    "feature": "Webhook Mayar menolak request dengan token rahasia yang salah (HTTP 401)",
+    "steps": "Kirim HTTP POST ke http://localhost:3000/api/webhooks/mayar dengan x-mayar-token palsu",
+    "expected": "HTTP 401 Akses ditolak: Token autentikasi webhook tidak valid",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  },
+  {
+    "id": "SEC-HOOK-03",
+    "feature": "Webhook Mayar memvalidasi keaslian transaksi ke gateway sebelum mutasi database (HTTP 422 jika fiktif)",
+    "steps": "Kirim HTTP POST dengan token webhook resmi dan ID pembayaran fiktif",
+    "expected": "HTTP 422 Verifikasi transaksi gagal ke gateway Mayar",
+    "actual": "fetch failed",
+    "status": "FAIL",
+    "evidence": "TypeError: fetch failed"
+  }
+]

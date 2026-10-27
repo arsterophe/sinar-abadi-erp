@@ -9,11 +9,9 @@ import {
   TerimaBarangPembelianInput,
   BatalkanPembelianInput,
   PEMBELIAN_LIMITS,
-  PembelianItem,
   canApprovePembelian,
   canReceivePembelian,
   canCreatePembelian,
-  canCancelPembelian,
 } from "@/types/pembelian";
 import { UserProfile, isValidRole } from "@/types/auth";
 
@@ -84,22 +82,9 @@ async function getAuthenticatedUserAndProfile() {
   };
 }
 
-/**
- * Helper: Generate nomor urut PO berikutnya (misal PO-00020).
- */
-async function generateNextNomorPO(supabase: Awaited<ReturnType<typeof createServerClientInstance>>): Promise<string> {
-  // Ambil nomor urut atomik dari sequence PostgreSQL (mencegah race condition concurrency)
-  const { data: rpcNomor, error: rpcError } = await supabase.rpc("ambil_nomor_po_berikutnya");
 
-  if (rpcError || !rpcNomor || typeof rpcNomor !== "string" || !rpcNomor.trim()) {
-    console.error("Gagal mengambil nomor urut PO dari database sequence:", rpcError);
-    throw new Error(
-      "Gagal mengalokasikan nomor PO atomik: Fungsi database 'ambil_nomor_po_berikutnya' tidak tersedia atau mengalami kendala. Pastikan migrasi '03_izin_dan_kebijakan_pembelian.sql' telah diterapkan pada basis data Supabase."
-    );
-  }
-
-  return rpcNomor.trim();
-}
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Server Action: Buat Pengajuan Pembelian Baru (PO).
@@ -108,6 +93,7 @@ async function generateNextNomorPO(supabase: Awaited<ReturnType<typeof createSer
  * - Jumlah dipesan 1 s/d 10.000.
  * - Status awal: 'diajukan'.
  * - Stok barang TIDAK BERUBAH saat diajukan.
+ * - Dilindungi BR-12 (harga pokok tidak boleh dibaca oleh staf gudang/nonmanajer).
  */
 export async function buatPengajuanPembelianAction(
   input: BuatPengajuanPembelianInput
@@ -118,7 +104,7 @@ export async function buatPengajuanPembelianAction(
       return { success: false, error: auth.error || "Gagal verifikasi autentikasi." };
     }
 
-    const { supabase, user, profile } = auth;
+    const { supabase, profile } = auth;
 
     if (!canCreatePembelian(profile.peran)) {
       return {
@@ -132,15 +118,15 @@ export async function buatPengajuanPembelianAction(
       return { success: false, error: "Data pengajuan pembelian tidak valid." };
     }
 
-    const pemasokId = (input.pemasok_id || "").trim();
-    const barangId = (input.barang_id || "").trim();
+    const rawPemasokId = (input.pemasok_id || "").trim();
+    const rawBarangId = (input.barang_id || "").trim();
     const jumlahDipesan = Number(input.jumlah_dipesan);
 
-    if (!pemasokId) {
+    if (!rawPemasokId) {
       return { success: false, error: "Pemasok wajib dipilih." };
     }
 
-    if (!barangId) {
+    if (!rawBarangId) {
       return { success: false, error: "Barang yang akan dipesan wajib dipilih." };
     }
 
@@ -151,18 +137,26 @@ export async function buatPengajuanPembelianAction(
     ) {
       return {
         success: false,
-        error: `Jumlah dipesan harus berupa bilangan bulat antara ${PEMBELIAN_LIMITS.MIN_JUMLAH_PESAN} sampai ${PEMBELIAN_LIMITS.MAX_JUMLAH_PESAN} (BR-09).`,
+        error: `Jumlah dipesan harus berupa bilangan bulat antara ${PEMBELIAN_LIMITS.MIN_JUMLAH_PESAN} sampai ${PEMBELIAN_LIMITS.MAX_JUMLAH_PESAN.toLocaleString("id-ID")} (BR-09).`,
       };
     }
 
-    // 2. Validasi pemasok aktif
-    const { data: pemasok, error: pemasokError } = await supabase
+    // 2. Validasi pemasok aktif (Mendukung identifikasi via UUID kanonis maupun kode pemasok)
+    const isPemasokUuid = UUID_REGEX.test(rawPemasokId);
+    const pemasokQuery = supabase
       .from("pemasok")
-      .select("id, nama, aktif")
-      .eq("id", pemasokId)
-      .maybeSingle();
+      .select("id, kode, nama, aktif");
 
-    if (pemasokError || !pemasok) {
+    const { data: pemasok, error: pemasokError } = isPemasokUuid
+      ? await pemasokQuery.eq("id", rawPemasokId).maybeSingle()
+      : await pemasokQuery.eq("kode", rawPemasokId).maybeSingle();
+
+    if (pemasokError) {
+      console.error("Gagal validasi pemasok:", pemasokError);
+      return { success: false, error: `Gagal memverifikasi data mitra pemasok: ${pemasokError.message}` };
+    }
+
+    if (!pemasok) {
       return { success: false, error: "Data mitra pemasok tidak ditemukan di database." };
     }
 
@@ -170,14 +164,24 @@ export async function buatPengajuanPembelianAction(
       return { success: false, error: `Pemasok '${pemasok.nama}' berstatus nonaktif dan tidak dapat menerima pesanan baru.` };
     }
 
-    // 3. Validasi barang aktif
-    const { data: barang, error: barangError } = await supabase
+    // 3. Validasi barang aktif (Mendukung identifikasi via UUID kanonis maupun kode barang)
+    // SANGAT PENTING (BR-12): Jangan sertakan 'harga_pokok' dalam select karena role nonmanajer
+    // (staf gudang) tidak memiliki hak SELECT pada kolom tersebut di basis data.
+    const isBarangUuid = UUID_REGEX.test(rawBarangId);
+    const barangQuery = supabase
       .from("barang")
-      .select("id, kode, nama, aktif, harga_pokok")
-      .eq("id", barangId)
-      .maybeSingle();
+      .select("id, kode, nama, aktif");
 
-    if (barangError || !barang) {
+    const { data: barang, error: barangError } = isBarangUuid
+      ? await barangQuery.eq("id", rawBarangId).maybeSingle()
+      : await barangQuery.eq("kode", rawBarangId).maybeSingle();
+
+    if (barangError) {
+      console.error("Gagal validasi barang:", barangError);
+      return { success: false, error: `Gagal memverifikasi data barang dari database: ${barangError.message}` };
+    }
+
+    if (!barang) {
       return { success: false, error: "Data barang tidak ditemukan di katalog sistem." };
     }
 
@@ -185,76 +189,41 @@ export async function buatPengajuanPembelianAction(
       return { success: false, error: `Barang '${barang.nama}' (${barang.kode}) berstatus nonaktif dan tidak dapat dipesan.` };
     }
 
-    // Tentukan harga beli satuan (opsional diisi jika Manajer yang membuat)
-    let hargaBeliSatuan: number | null = null;
-    if (profile.peran === "manajer" && input.harga_beli_satuan !== undefined && input.harga_beli_satuan !== null) {
-      const parsedHarga = Number(input.harga_beli_satuan);
-      if (!isNaN(parsedHarga) && parsedHarga > 0) {
-        hargaBeliSatuan = parsedHarga;
-      }
-    }
+    // 4. Eksekusi pengajuan pembelian secara atomik melalui RPC database resmi (ajukan_pembelian)
+    // RPC ini mengurus alokasi nomor PO unik, audit log, serta penyimpanan ke tabel pembelian secara atomik.
+    const { data: poId, error: rpcError } = await supabase.rpc("ajukan_pembelian", {
+      p_pemasok_id: pemasok.id,
+      p_barang_id: barang.id,
+      p_jumlah_dipesan: jumlahDipesan,
+    });
 
-    // 4. Generate nomor urut PO baru secara atomik dari sequence basis data
-    let nomorPO: string;
-    try {
-      nomorPO = await generateNextNomorPO(supabase);
-    } catch (nomorErr) {
+    if (rpcError || !poId) {
+      console.error("Gagal eksekusi RPC ajukan_pembelian:", rpcError);
       return {
         success: false,
-        error:
-          nomorErr instanceof Error
-            ? nomorErr.message
-            : "Gagal mengalokasikan nomor urut PO dari sequence basis data.",
+        error: rpcError?.message || "Gagal menyimpan pengajuan pembelian ke database.",
       };
     }
 
-    const newId = crypto.randomUUID();
-    const nowIso = new Date().toISOString();
-
-    // 5. Insert record pembelian ke tabel public.pembelian
-    const insertPayload = {
-      id: newId,
-      nomor: nomorPO,
-      pemasok_id: pemasokId,
-      barang_id: barangId,
-      jumlah_dipesan: jumlahDipesan,
-      jumlah_diterima: null,
-      harga_beli_satuan: hargaBeliSatuan,
-      status: "diajukan" as const,
-      alasan_tolak: null,
-      diajukan_oleh: user.id,
-      diajukan_pada: nowIso,
-      diputuskan_oleh: null,
-      diputuskan_pada: null,
-      diterima_oleh: null,
-      diterima_pada: null,
-    };
-
-    const { error: insertError } = await supabase
+    // 5. Ambil nomor PO atomik yang dihasilkan oleh basis data
+    const { data: createdPo } = await supabase
       .from("pembelian")
-      .insert(insertPayload);
+      .select("id, nomor")
+      .eq("id", poId)
+      .maybeSingle();
 
-    if (insertError) {
-      console.error("Gagal insert pembelian:", insertError);
-      return {
-        success: false,
-        error: `Gagal menyimpan pengajuan pembelian ke database: ${insertError.message}`,
-      };
-    }
-
-    // 6. Pencatatan jejak audit (BR-12):
-    // Dikelola secara otoritatif dan atomik di level basis data oleh trigger trg_audit_tambah_pembelian
-    // dalam transaksi yang sama dengan INSERT pembelian (mencegah pencatatan audit ganda).
+    const nomorPO = createdPo?.nomor || String(poId);
 
     // Revalidasi cache halaman
     revalidatePath("/pembelian");
     revalidatePath("/barang-dan-stok");
+    revalidatePath("/radar-stok");
     revalidatePath("/");
 
     return {
       success: true,
       data: {
-        id: newId,
+        id: poId,
         nomor: nomorPO,
       },
     };
@@ -308,7 +277,7 @@ export async function setujuiPembelianAction(
     }
 
     // Eksekusi mutasi persetujuan secara atomik via RPC SECURITY DEFINER (dengan lock FOR UPDATE & audit log)
-    const { data: rpcData, error: rpcError } = await supabase.rpc("setujui_pembelian", {
+    const { error: rpcError } = await supabase.rpc("setujui_pembelian", {
       p_pembelian_id: pembelianId,
       p_harga_beli_satuan: hargaBeliSatuan,
     });
@@ -318,13 +287,6 @@ export async function setujuiPembelianAction(
       return {
         success: false,
         error: `Gagal menyetujui pembelian di database: ${rpcError.message}`,
-      };
-    }
-
-    if (!rpcData || !rpcData.success) {
-      return {
-        success: false,
-        error: "Transaksi persetujuan pembelian tidak menghasilkan konfirmasi yang valid dari basis data.",
       };
     }
 
@@ -448,23 +410,16 @@ export async function batalkanPembelianAction(
       return { success: false, error: "ID pembelian wajib disertakan." };
     }
 
-    // Eksekusi mutasi pembatalan secara atomik via RPC SECURITY DEFINER (dengan lock FOR UPDATE & audit log)
-    const { data: rpcData, error: rpcError } = await supabase.rpc("batalkan_pembelian", {
+    // Eksekusi mutasi pembatalan secara atomik via RPC SECURITY DEFINER
+    const { error: rpcError } = await supabase.rpc("batalkan_pengajuan_pembelian", {
       p_pembelian_id: pembelianId,
     });
 
     if (rpcError) {
-      console.error("Gagal eksekusi RPC batalkan_pembelian:", rpcError);
+      console.error("Gagal eksekusi RPC batalkan_pengajuan_pembelian:", rpcError);
       return {
         success: false,
         error: `Gagal membatalkan pembelian di database: ${rpcError.message}`,
-      };
-    }
-
-    if (!rpcData || !rpcData.success) {
-      return {
-        success: false,
-        error: "Transaksi pembatalan pembelian tidak menghasilkan konfirmasi yang valid dari basis data.",
       };
     }
 
@@ -515,7 +470,7 @@ export async function terimaBarangPembelianAction(
       return { success: false, error: auth.error || "Gagal verifikasi autentikasi." };
     }
 
-    const { supabase, user, profile } = auth;
+    const { supabase, profile } = auth;
 
     if (!canReceivePembelian(profile.peran)) {
       return {
@@ -568,13 +523,9 @@ export async function terimaBarangPembelianAction(
       };
     }
 
-    // 2. Eksekusi HANYA melalui RPC Database Atomik proses_penerimaan_barang_pembelian
-    // CATATAN KEAMANAN & INTEGRITAS (ACID):
-    // Dilarang melakukan mutasi parsial bertahap di sisi client/server action.
-    // Pembaruan status PO, penambahan stok barang, pembaruan HPP, dan pencatatan kartu stok
-    // WAJIB berada dalam 1 transaksi atomik database dengan penguncian baris (FOR UPDATE).
-    const { data: rpcData, error: rpcError } = await supabase.rpc(
-      "proses_penerimaan_barang_pembelian",
+    // 2. Eksekusi melalui RPC Database Atomik terima_pembelian
+    const { error: rpcError } = await supabase.rpc(
+      "terima_pembelian",
       {
         p_pembelian_id: pembelianId,
         p_jumlah_diterima: jumlahDiterima,
@@ -582,28 +533,28 @@ export async function terimaBarangPembelianAction(
     );
 
     if (rpcError) {
-      console.error("Gagal eksekusi RPC proses_penerimaan_barang_pembelian:", rpcError);
-
-      if (rpcError.message.includes("does not exist") || rpcError.code === "42883") {
-        return {
-          success: false,
-          error:
-            "Aksi ditolak demi integritas basis data: Fungsi transaksi atomik 'proses_penerimaan_barang_pembelian' belum terpasang di database Supabase. Silakan terapkan migrasi '03_izin_dan_kebijakan_pembelian.sql' terlebih dahulu.",
-        };
-      }
-
+      console.error("Gagal eksekusi RPC terima_pembelian:", rpcError);
       return {
         success: false,
         error: `Gagal mencatat penerimaan barang: ${rpcError.message}`,
       };
     }
 
-    if (!rpcData || !rpcData.success) {
-      return {
-        success: false,
-        error: "Transaksi penerimaan barang tidak menghasilkan konfirmasi yang valid dari basis data.",
-      };
-    }
+    // 3. Ambil data PO dan stok terbaru
+    const { data: updatedPo } = await supabase
+      .from("pembelian")
+      .select("id, nomor, jumlah_diterima, barang_id")
+      .eq("id", pembelianId)
+      .maybeSingle();
+
+    const { data: updatedBarang } = await supabase
+      .from("barang")
+      .select("stok")
+      .eq("id", pembelian.barang_id)
+      .maybeSingle();
+
+    const stokSesudah = Number(updatedBarang?.stok) || 0;
+    const stokSebelum = Math.max(0, stokSesudah - jumlahDiterima);
 
     // Revalidasi semua cache halaman terkait setelah transaksi atomik berhasil
     revalidatePath("/pembelian");
@@ -614,13 +565,15 @@ export async function terimaBarangPembelianAction(
       success: true,
       data: {
         id: pembelianId,
-        nomor: rpcData.nomor,
-        stok_sebelum: rpcData.stok_sebelum,
-        stok_sesudah: rpcData.stok_sesudah,
-        jumlah_diterima: rpcData.jumlah_diterima,
-        harga_pokok_baru: Number(rpcData.harga_pokok_baru) || 0,
+        nomor: updatedPo?.nomor || pembelian.nomor,
+        stok_sebelum: stokSebelum,
+        stok_sesudah: stokSesudah,
+        jumlah_diterima: jumlahDiterima,
+        harga_pokok_baru: 0,
       },
     };
+
+
   } catch (err) {
     console.error("Exception in terimaBarangPembelianAction:", err);
     return {

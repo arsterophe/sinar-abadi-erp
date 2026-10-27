@@ -4,6 +4,7 @@ import { createServerClientInstance } from "@/lib/supabase/server";
 import { UserProfile, isValidRole } from "@/types/auth";
 import { getPengaturanData } from "./actions";
 import PengaturanClientView from "@/components/pengaturan/PengaturanClientView";
+import AksesDitolak from "@/components/layout/AksesDitolak";
 
 // Rute ini dilindungi di server menggunakan sesi dinamis & verifikasi profil Supabase.
 // Menonaktifkan instant prerendering pada route dinamis ini sesuai konvensi Next.js 16.
@@ -50,10 +51,17 @@ export default async function PengaturanPage() {
   }
 
   // 5. Aturan Hak Akses Rute (PRD Bab 7 & Instruksi Keamanan BR-12):
-  // Menu Pengaturan EKSKLUSIF hanya boleh diakses oleh peran 'manajer'.
+  // Menu Pengaturan EKSKLUSIF hanya boleh diakses oleh peran 'manajer' (unauthorized_pengaturan).
   // Staf Penjualan dan Gudang DILARANG mengakses modul manajemen peran dan konfigurasi.
   if (profile.peran !== "manajer") {
-    redirect("/?error=unauthorized_pengaturan");
+    return (
+      <AksesDitolak
+        userProfile={profile}
+        activePath="/pengaturan"
+        title="403 — Akses Ditolak: Modul Pengaturan"
+        pesan="Menu Pengaturan Sistem dan Audit Log bersifat eksklusif hanya untuk peran Manajer (PRD Bab 7 & BR-12). Staf Penjualan dan Gudang tidak memiliki wewenang mengelola akun atau membaca riwayat audit sistem."
+      />
+    );
   }
 
   // 6. Ambil data pengaturan (daftar pengguna & audit log)

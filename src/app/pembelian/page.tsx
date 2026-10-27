@@ -1,12 +1,34 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { createServerClientInstance } from "@/lib/supabase/server";
-import { UserProfile, isValidRole } from "@/types/auth";
+import { UserProfile, isValidRole, DbUserRole } from "@/types/auth";
 import { PembelianItem, PemasokItem } from "@/types/pembelian";
 import AppLayout from "@/components/layout/AppLayout";
+import AksesDitolak from "@/components/layout/AksesDitolak";
 import PembelianClientView from "@/components/pembelian/PembelianClientView";
 
 export const instant = false;
+
+interface RawPembelianRow {
+  id: string;
+  nomor: string;
+  pemasok_id: string;
+  barang_id: string;
+  jumlah_dipesan: number;
+  jumlah_diterima?: number | null;
+  harga_beli_satuan?: number | null;
+  status: PembelianItem["status"];
+  alasan_tolak?: string | null;
+  diajukan_oleh: string;
+  diajukan_pada: string;
+  diputuskan_oleh?: string | null;
+  diputuskan_pada?: string | null;
+  diterima_oleh?: string | null;
+  diterima_pada?: string | null;
+  pemasok?: PemasokItem | PemasokItem[] | null;
+  barang?: PembelianItem["barang"] | PembelianItem["barang"][] | null;
+}
 
 export default async function PembelianPage() {
   await connection();
@@ -47,54 +69,23 @@ export default async function PembelianPage() {
   }
 
   // 5. ATURAN HAK AKSES PERAN (PRD Bab 7 & BR-12):
-  // Halaman Pembelian hanya diperuntukkan bagi Staf Gudang dan Manajer.
+  // Halaman Pembelian hanya diperuntukkan bagi Staf Gudang dan Manajer (Akses Terbatas).
   // Staf Penjualan dilarang mengakses modul pembelian.
-  if (profile.peran === "penjualan") {
+  if (profile.peran === "penjualan" || (profile.peran !== "gudang" && profile.peran !== "manajer")) {
     return (
-      <AppLayout
-        currentRole="sales"
+      <AksesDitolak
         userProfile={profile}
         activePath="/pembelian"
-      >
-        <div className="flex flex-col items-center justify-center min-h-[60vh] text-center p-6">
-          <div className="rounded-2xl bg-amber-50 border border-amber-200 p-8 max-w-md shadow-sm">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 mb-4">
-              <svg
-                className="h-8 w-8"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"
-                />
-              </svg>
-            </div>
-            <h2 className="text-lg font-bold text-slate-900">Akses Terbatas</h2>
-            <p className="mt-2 text-xs leading-relaxed text-slate-600">
-              Sesuai aturan operasional distribusi CV Sinar Abadi Niaga (PRD Bab 7), modul Pembelian hanya dapat diakses oleh <strong className="text-slate-900">Staf Gudang</strong> dan <strong className="text-slate-900">Manajer</strong>.
-            </p>
-            <div className="mt-5">
-              <a
-                href="/"
-                className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 transition-colors"
-              >
-                Kembali ke Dashboard
-              </a>
-            </div>
-          </div>
-        </div>
-      </AppLayout>
+        title="403 — Akses Ditolak: Modul Pembelian"
+        pesan="Sesuai aturan operasional distribusi CV Sinar Abadi Niaga (PRD Bab 7), modul Pembelian hanya dapat diakses oleh Staf Gudang dan Manajer."
+      />
     );
   }
 
   const isManajer = profile.peran === "manajer";
 
   // 6. Query Data Pembelian, Mitra Pemasok, dan Katalog Barang
-  let rawPembelian: any[] = [];
+  let rawPembelian: RawPembelianRow[] = [];
   let pemasokList: PemasokItem[] = [];
   let barangList: { id: string; kode: string; nama: string; satuan: string; stok: number }[] = [];
 
@@ -132,9 +123,9 @@ export default async function PembelianPage() {
           )
           .order("diajukan_pada", { ascending: false });
 
-        rawPembelian = (fallbackPemb || []).map((p) => ({ ...p, harga_beli_satuan: null }));
+        rawPembelian = ((fallbackPemb || []) as unknown as RawPembelianRow[]).map((p) => ({ ...p, harga_beli_satuan: null }));
       } else {
-        rawPembelian = dataPembelian || [];
+        rawPembelian = (dataPembelian as unknown as RawPembelianRow[]) || [];
       }
     } else {
       // Staf Gudang: DILARANG meminta kolom harga_beli_satuan (BR-12)
@@ -161,7 +152,7 @@ export default async function PembelianPage() {
       if (errPembelian) {
         console.warn("Query pembelian gudang terkendala:", errPembelian.message);
       }
-      rawPembelian = dataPembelian || [];
+      rawPembelian = (dataPembelian as unknown as RawPembelianRow[]) || [];
     }
 
     // 6b. Query Mitra Pemasok (PRD Bab 7)
@@ -198,7 +189,7 @@ export default async function PembelianPage() {
     if (po.diterima_oleh) userIdsToFetch.add(po.diterima_oleh);
   });
 
-  const profilesMap = new Map<string, { id: string; nama_lengkap: string; peran: any }>();
+  const profilesMap = new Map<string, { id: string; nama_lengkap: string; peran: DbUserRole }>();
   if (userIdsToFetch.size > 0) {
     const { data: fetchedProfiles } = await supabase
       .from("profiles")
@@ -206,7 +197,11 @@ export default async function PembelianPage() {
       .in("id", Array.from(userIdsToFetch));
 
     (fetchedProfiles || []).forEach((prof) => {
-      profilesMap.set(prof.id, prof);
+      profilesMap.set(prof.id, {
+        id: prof.id,
+        nama_lengkap: prof.nama_lengkap,
+        peran: prof.peran as DbUserRole,
+      });
     });
   }
 

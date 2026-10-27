@@ -16,6 +16,7 @@ export interface MayarCreatePaymentRequest {
   mobile?: string;
   description?: string;
   redirectUrl?: string;
+  uniqueRef?: string;
 }
 
 /**
@@ -74,6 +75,14 @@ export interface MayarPaymentStatusData {
   paymentMethod?: string;
   transactionId?: string;
   paidAt?: string;
+  customer?: {
+    name?: string;
+    email?: string;
+    mobile?: string;
+  };
+  link?: string;
+  paymentUrl?: string;
+  url?: string;
 }
 
 /**

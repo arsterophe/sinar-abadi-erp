@@ -23,6 +23,42 @@ export async function getPengaturanData(): Promise<PengaturanDataPayload> {
   const supabase = await createServerClientInstance();
 
   try {
+    // 0. Verifikasi Sesi & Hak Akses Manajer Aktif (PRD Bab 7 & BR-12)
+    const {
+      data: { user },
+      error: userErr,
+    } = await supabase.auth.getUser();
+
+    if (userErr || !user) {
+      return {
+        profilesList: [],
+        auditLogs: [],
+        error: "Akses ditolak: sesi login Anda tidak valid atau telah berakhir.",
+      };
+    }
+
+    const { data: callerProfile, error: callerErr } = await supabase
+      .from("profiles")
+      .select("id, peran, aktif")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (callerErr || !callerProfile) {
+      return {
+        profilesList: [],
+        auditLogs: [],
+        error: "Akses ditolak: profil pengguna tidak ditemukan di sistem.",
+      };
+    }
+
+    if (callerProfile.aktif !== true || callerProfile.peran !== "manajer") {
+      return {
+        profilesList: [],
+        auditLogs: [],
+        error: "Akses ditolak: Hanya peran Manajer aktif yang berwenang mengakses data pengaturan dan log audit (BR-12).",
+      };
+    }
+
     // 1. Ambil daftar profil pengguna
     const { data: rawProfiles, error: profilesErr } = await supabase
       .from("profiles")

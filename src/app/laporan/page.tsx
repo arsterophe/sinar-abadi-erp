@@ -4,6 +4,7 @@ import { createServerClientInstance } from "@/lib/supabase/server";
 import { UserProfile, isValidRole } from "@/types/auth";
 import { getLaporanData } from "@/lib/laporan/getLaporanData";
 import LaporanClientView from "@/components/laporan/LaporanClientView";
+import AksesDitolak from "@/components/layout/AksesDitolak";
 
 // Rute ini dilindungi di server menggunakan sesi dinamis & verifikasi profil Supabase.
 // Menonaktifkan instant prerendering pada route dinamis ini sesuai konvensi Next.js 16.
@@ -50,10 +51,17 @@ export default async function LaporanPage() {
   }
 
   // 5. Aturan Hak Akses Rute (PRD Bab 7 & Instruksi Keamanan BR-12):
-  // Menu Laporan EKSKLUSIF hanya boleh diakses oleh peran 'manajer'.
+  // Menu Laporan EKSKLUSIF hanya boleh diakses oleh peran 'manajer' (unauthorized_laporan).
   // Staf Penjualan dan Gudang DILARANG melihat laporan finansial, margin, laba, dan HPP.
   if (profile.peran !== "manajer") {
-    redirect("/?error=unauthorized_laporan");
+    return (
+      <AksesDitolak
+        userProfile={profile}
+        activePath="/laporan"
+        title="403 — Akses Ditolak: Modul Laporan"
+        pesan="Menu Laporan Finansial dan Margin bersifat eksklusif hanya untuk peran Manajer (PRD Bab 7 & BR-12). Staf Penjualan dan Gudang tidak memiliki izin mengakses data finansial ini."
+      />
+    );
   }
 
   // 6. Ambil data laporan aktual langsung dari Supabase

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -125,6 +125,13 @@ export default function PesananJualClientView({
     router.refresh();
     setTimeout(() => setIsRefreshing(false), 600);
   };
+
+  // State Pesanan List lokal untuk sinkronisasi seketika & pencegahan aksi kedaluwarsa
+  const [pesananList, setPesananList] = useState<PesananJualHeader[]>(initialPesanan);
+
+  useEffect(() => {
+    setPesananList(initialPesanan);
+  }, [initialPesanan]);
 
   // State Fitur 1: Detail Item Baris Pesanan Jual
   const [selectedPesananItems, setSelectedPesananItems] = useState<ItemPesananJual[]>([]);
@@ -269,6 +276,17 @@ export default function PesananJualClientView({
       const confirmedTotal = confirmModalPesanan.total;
       setIsConfirming(false);
       setConfirmModalPesanan(null);
+      setPesananList((prevList) =>
+        prevList.map((p) =>
+          p.id === confirmModalPesanan.id
+            ? {
+                ...p,
+                status: "dikonfirmasi" as const,
+                dikonfirmasi_pada: p.dikonfirmasi_pada || new Date().toISOString(),
+              }
+            : p
+        )
+      );
       if (selectedPesanan?.id === confirmModalPesanan.id) {
         setSelectedPesanan((prev) => (prev ? { ...prev, status: "dikonfirmasi" } : null));
       }
@@ -289,6 +307,13 @@ export default function PesananJualClientView({
 
   const handleExecuteKirim = async () => {
     if (!shipModalPesanan || isShippingRef.current || isShipping) return;
+
+    // Proteksi status UI: jika pesanan sudah berstatus 'dikirim', batalkan eksekusi
+    if (shipModalPesanan.status === "dikirim") {
+      setShipModalPesanan(null);
+      return;
+    }
+
     isShippingRef.current = true;
     setIsShipping(true);
     setShipError(null);
@@ -309,9 +334,31 @@ export default function PesananJualClientView({
       isShippingRef.current = false;
       setIsShipping(false);
       setShipModalPesanan(null);
+
+      // Mutasi status lokal seketika ke 'dikirim' agar tombol Kirim langsung nonaktif
+      setPesananList((prevList) =>
+        prevList.map((p) =>
+          p.id === shipModalPesanan.id
+            ? {
+                ...p,
+                status: "dikirim" as const,
+                jatuh_tempo: jatuhTempo,
+                dikirim_pada: p.dikirim_pada || new Date().toISOString(),
+              }
+            : p
+        )
+      );
+
       if (selectedPesanan?.id === shipModalPesanan.id) {
         setSelectedPesanan((prev) =>
-          prev ? { ...prev, status: "dikirim", jatuh_tempo: jatuhTempo } : null
+          prev
+            ? {
+                ...prev,
+                status: "dikirim",
+                jatuh_tempo: jatuhTempo,
+                dikirim_pada: prev.dikirim_pada || new Date().toISOString(),
+              }
+            : null
         );
       }
       setShipSuccessNotification({ nomor, jatuh_tempo: jatuhTempo });
@@ -342,6 +389,17 @@ export default function PesananJualClientView({
       const total = settleModalPesanan.total;
       setIsSettling(false);
       setSettleModalPesanan(null);
+      setPesananList((prevList) =>
+        prevList.map((p) =>
+          p.id === settleModalPesanan.id
+            ? {
+                ...p,
+                status: "lunas" as const,
+                dilunasi_pada: new Date().toISOString(),
+              }
+            : p
+        )
+      );
       if (selectedPesanan?.id === settleModalPesanan.id) {
         setSelectedPesanan((prev) =>
           prev ? { ...prev, status: "lunas", dilunasi_pada: new Date().toISOString() } : null
@@ -387,6 +445,18 @@ export default function PesananJualClientView({
       setIsCancelling(false);
       setCancelModalPesanan(null);
       setCancelReason("");
+      setPesananList((prevList) =>
+        prevList.map((p) =>
+          p.id === cancelModalPesanan.id
+            ? {
+                ...p,
+                status: "dibatalkan" as const,
+                dibatalkan_pada: new Date().toISOString(),
+                alasan_batal: cancelReason.trim(),
+              }
+            : p
+        )
+      );
       if (selectedPesanan?.id === cancelModalPesanan.id) {
         setSelectedPesanan((prev) =>
           prev
@@ -520,25 +590,25 @@ export default function PesananJualClientView({
   };
 
   // Metrik KPI
-  const totalPesananCount = initialPesanan.length;
-  const totalNilaiTransaksi = initialPesanan.reduce(
+  const totalPesananCount = pesananList.length;
+  const totalNilaiTransaksi = pesananList.reduce(
     (acc, p) => acc + (Number(p.total) || 0),
     0
   );
-  const dikonfirmasiCount = initialPesanan.filter((p) => p.status === "dikonfirmasi").length;
-  const dikirimCount = initialPesanan.filter((p) => p.status === "dikirim").length;
-  const lunasCount = initialPesanan.filter((p) => p.status === "lunas").length;
-  const dibatalkanCount = initialPesanan.filter((p) => p.status === "dibatalkan").length;
+  const dikonfirmasiCount = pesananList.filter((p) => p.status === "dikonfirmasi").length;
+  const dikirimCount = pesananList.filter((p) => p.status === "dikirim").length;
+  const lunasCount = pesananList.filter((p) => p.status === "lunas").length;
+  const dibatalkanCount = pesananList.filter((p) => p.status === "dibatalkan").length;
 
   // Nilai piutang berjalan (status dikonfirmasi + dikirim) sesuai aturan PRD BR-05
-  const nilaiPiutangBerjalan = initialPesanan
+  const nilaiPiutangBerjalan = pesananList
     .filter((p) => p.status === "dikonfirmasi" || p.status === "dikirim")
     .reduce((acc, p) => acc + (Number(p.total) || 0), 0);
 
   // Daftar pelanggan unik dari dataset transaksi untuk opsi filter pelanggan (PRD Bab 7)
   const uniqueCustomers = useMemo(() => {
     const map = new Map<string, { id: string; nama: string; kode: string }>();
-    for (const p of initialPesanan) {
+    for (const p of pesananList) {
       if (p.pelanggan_id && !map.has(p.pelanggan_id)) {
         map.set(p.pelanggan_id, {
           id: p.pelanggan_id,
@@ -548,7 +618,7 @@ export default function PesananJualClientView({
       }
     }
     return Array.from(map.values()).sort((a, b) => a.nama.localeCompare(b.nama));
-  }, [initialPesanan]);
+  }, [pesananList]);
 
   // Status apakah ada filter yang sedang aktif
   const isFilterActive =
@@ -581,7 +651,7 @@ export default function PesananJualClientView({
 
   // Filter, Search & Sort data
   const filteredAndSortedPesanan = useMemo(() => {
-    const list = initialPesanan.filter((item) => {
+    const list = pesananList.filter((item) => {
       // 1. Filter Status
       if (statusFilter !== "semua" && item.status !== statusFilter) {
         return false;
@@ -650,7 +720,7 @@ export default function PesananJualClientView({
     });
 
     return list;
-  }, [initialPesanan, statusFilter, customerFilter, datePreset, startDate, endDate, searchTerm, sortField, sortDirection]);
+  }, [pesananList, statusFilter, customerFilter, datePreset, startDate, endDate, searchTerm, sortField, sortDirection]);
 
   // Data Terpaginasi Sejati
   const totalPages = Math.max(1, Math.ceil(filteredAndSortedPesanan.length / pageSize));
@@ -1506,7 +1576,7 @@ export default function PesananJualClientView({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {/* Penanganan Kegagalan Pengambilan Data (Tidak Disamarkan Sebagai Data Kosong) */}
-                {dbError && initialPesanan.length === 0 ? (
+                {dbError && pesananList.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-4 py-12 text-center">
                       <div className="flex flex-col items-center justify-center">
@@ -2194,6 +2264,14 @@ export default function PesananJualClientView({
                   </button>
                 )}
 
+                {/* Pesan Informatif jika Pesanan Sudah Dikirim */}
+                {selectedPesanan.status === "dikirim" && (
+                  <div className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 border border-blue-200 px-3 py-1.5 text-xs font-medium text-blue-800">
+                    <Truck className="h-4 w-4 text-blue-600" />
+                    <span>Pesanan Telah Dikirim Gudang</span>
+                  </div>
+                )}
+
                 {/* Aksi Buat Tagihan Mayar (Dikirim -> Tagihan Online Terbit) */}
                 {canCreateMayarInvoice(selectedPesanan) && (
                   <button
@@ -2381,7 +2459,9 @@ export default function PesananJualClientView({
               </div>
               <div>
                 <h3 className="text-base font-bold text-slate-900">
-                  Kirim Pesanan Jual?
+                  {shipModalPesanan.status === "dikirim"
+                    ? "Pesanan Telah Dikirim"
+                    : "Kirim Pesanan Jual?"}
                 </h3>
                 <p className="mt-0.5 text-xs text-slate-500">
                   Dokumen: <strong className="font-mono text-slate-800">{shipModalPesanan.nomor}</strong>
@@ -2398,20 +2478,36 @@ export default function PesananJualClientView({
                 <span className="text-slate-500">Total Tagihan:</span>
                 <span className="font-bold text-slate-900">{formatRupiah(shipModalPesanan.total)}</span>
               </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Status Saat Ini:</span>
+                <span className="font-semibold capitalize text-slate-900">{shipModalPesanan.status}</span>
+              </div>
             </div>
 
-            <div className="rounded-xl bg-indigo-50/70 border border-indigo-200/70 p-3 text-[11px] text-indigo-900 space-y-1">
-              <div className="font-semibold flex items-center gap-1.5 text-indigo-950">
-                <Truck className="h-4 w-4 text-indigo-600 shrink-0" />
-                <span>Ketentuan Pengiriman (PRD Bab 6.1 & BR-07):</span>
+            {shipModalPesanan.status === "dikirim" ? (
+              <div className="rounded-xl bg-blue-50 border border-blue-200 p-3 text-xs text-blue-900 flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold text-blue-950">Informasi Pengiriman:</span>
+                  <p className="mt-0.5 text-blue-800">
+                    Pesanan jual ini telah berstatus <strong>Dikirim</strong>. Dokumen pengiriman sudah diproses oleh Staf Gudang dan tidak perlu dikirim ulang.
+                  </p>
+                </div>
               </div>
-              <ul className="list-disc pl-4 space-y-0.5 text-indigo-800">
-                <li>Status dokumen akan diperbarui menjadi <strong>Dikirim</strong>.</li>
-                <li>Waktu pengiriman dicatat hari ini secara otomatis.</li>
-                <li>Tanggal jatuh tempo dihitung berdasarkan termin toko dari hari ini.</li>
-                <li>Hanya Staf Gudang &amp; Manajer yang berhak memproses pengiriman.</li>
-              </ul>
-            </div>
+            ) : (
+              <div className="rounded-xl bg-indigo-50/70 border border-indigo-200/70 p-3 text-[11px] text-indigo-900 space-y-1">
+                <div className="font-semibold flex items-center gap-1.5 text-indigo-950">
+                  <Truck className="h-4 w-4 text-indigo-600 shrink-0" />
+                  <span>Ketentuan Pengiriman (PRD Bab 6.1 & BR-07):</span>
+                </div>
+                <ul className="list-disc pl-4 space-y-0.5 text-indigo-800">
+                  <li>Status dokumen akan diperbarui menjadi <strong>Dikirim</strong>.</li>
+                  <li>Waktu pengiriman dicatat hari ini secara otomatis.</li>
+                  <li>Tanggal jatuh tempo dihitung berdasarkan termin toko dari hari ini.</li>
+                  <li>Hanya Staf Gudang &amp; Manajer yang berhak memproses pengiriman.</li>
+                </ul>
+              </div>
+            )}
 
             {shipError && (
               <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-800 flex items-start gap-2">
@@ -2433,26 +2529,28 @@ export default function PesananJualClientView({
                 }}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 transition-colors cursor-pointer"
               >
-                {shipError ? "Tutup" : "Batal"}
+                {shipError || shipModalPesanan.status === "dikirim" ? "Tutup" : "Batal"}
               </button>
-              <button
-                type="button"
-                disabled={isShipping}
-                onClick={handleExecuteKirim}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
-              >
-                {isShipping ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Memproses...</span>
-                  </>
-                ) : (
-                  <>
-                    <Truck className="h-4 w-4" />
-                    <span>Ya, Kirim Pesanan</span>
-                  </>
-                )}
-              </button>
+              {shipModalPesanan.status !== "dikirim" && (
+                <button
+                  type="button"
+                  disabled={isShipping}
+                  onClick={handleExecuteKirim}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  {isShipping ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>Memproses...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Truck className="h-4 w-4" />
+                      <span>Ya, Kirim Pesanan</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </div>

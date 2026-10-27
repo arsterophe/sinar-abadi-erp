@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState } from "react";
-import { X, AlertCircle, ShoppingCart, Loader2 } from "lucide-react";
-import { PemasokItem, PEMBELIAN_LIMITS } from "@/types/pembelian";
+import { X, AlertCircle, ShoppingCart, Loader2, Radar } from "lucide-react";
+import { PemasokItem, PEMBELIAN_LIMITS, RadarStokContextPO } from "@/types/pembelian";
 import { DbUserRole } from "@/types/auth";
 import { buatPengajuanPembelianAction } from "@/app/pembelian/actions";
 
@@ -21,6 +21,9 @@ interface BuatPembelianModalProps {
   barangList: BarangOption[];
   userRole: DbUserRole;
   onSuccess: (data: { id: string; nomor: string }) => void;
+  initialBarangId?: string;
+  initialJumlahDipesan?: number;
+  radarContext?: RadarStokContextPO;
 }
 
 export default function BuatPembelianModal({
@@ -30,13 +33,22 @@ export default function BuatPembelianModal({
   barangList,
   userRole,
   onSuccess,
+  initialBarangId,
+  initialJumlahDipesan,
+  radarContext,
 }: BuatPembelianModalProps) {
   const [pemasokId, setPemasokId] = useState("");
-  const [barangId, setBarangId] = useState("");
-  const [jumlahDipesan, setJumlahDipesan] = useState<number | "">("");
+  const [barangId, setBarangId] = useState(initialBarangId || "");
+  const [jumlahDipesan, setJumlahDipesan] = useState<number | "">(
+    initialJumlahDipesan !== undefined && initialJumlahDipesan > 0
+      ? initialJumlahDipesan
+      : ""
+  );
   const [hargaBeliSatuan, setHargaBeliSatuan] = useState<number | "">("");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const isSubmittingRef = React.useRef(false);
 
   if (!isOpen) return null;
 
@@ -44,6 +56,7 @@ export default function BuatPembelianModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingRef.current || loading) return;
     setErrorMsg(null);
 
     if (!pemasokId) {
@@ -78,6 +91,7 @@ export default function BuatPembelianModal({
       harga = h;
     }
 
+    isSubmittingRef.current = true;
     setLoading(true);
     try {
       const res = await buatPengajuanPembelianAction({
@@ -90,8 +104,16 @@ export default function BuatPembelianModal({
       if (!res.success || !res.data) {
         setErrorMsg(res.error || "Gagal membuat pengajuan pembelian.");
         setLoading(false);
+        isSubmittingRef.current = false;
         return;
       }
+
+      // Reset form state setelah berhasil
+      setPemasokId("");
+      setBarangId("");
+      setJumlahDipesan("");
+      setHargaBeliSatuan("");
+      isSubmittingRef.current = false;
 
       onSuccess(res.data);
       onClose();
@@ -102,6 +124,7 @@ export default function BuatPembelianModal({
           : "Terjadi kesalahan koneksi saat mengajukan pembelian."
       );
       setLoading(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -149,6 +172,45 @@ export default function BuatPembelianModal({
                 <p className="font-semibold">Validasi Pengajuan Gagal</p>
                 <p className="mt-0.5 leading-relaxed">{errorMsg}</p>
               </div>
+            </div>
+          )}
+
+          {/* Konteks Analitik Radar Stok jika diinisiasi dari Radar Stok */}
+          {radarContext && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-3.5 space-y-2 text-xs">
+              <div className="flex items-center gap-2 font-bold text-blue-900">
+                <Radar className="h-4 w-4 text-blue-600" />
+                <span>Konteks Rekomendasi Radar Stok</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                <div className="rounded-lg bg-white p-2.5 border border-blue-100 shadow-2xs">
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Stok Fisik</span>
+                  <span className="font-extrabold text-slate-800 text-xs">
+                    {radarContext.stokFisik.toLocaleString("id-ID")} {radarContext.satuan}
+                  </span>
+                </div>
+                <div className="rounded-lg bg-white p-2.5 border border-blue-100 shadow-2xs">
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Batas Minimum</span>
+                  <span className="font-extrabold text-slate-800 text-xs">
+                    {radarContext.stokMinimum.toLocaleString("id-ID")} {radarContext.satuan}
+                  </span>
+                </div>
+                <div className="rounded-lg bg-white p-2.5 border border-blue-100 shadow-2xs">
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">PO Berjalan</span>
+                  <span className="font-extrabold text-purple-700 text-xs">
+                    +{radarContext.incomingPO.toLocaleString("id-ID")} {radarContext.satuan}
+                  </span>
+                </div>
+                <div className="rounded-lg bg-white p-2.5 border border-blue-200 shadow-2xs">
+                  <span className="text-blue-600 block text-[10px] uppercase font-bold">Rekomendasi</span>
+                  <span className="font-extrabold text-blue-700 text-xs">
+                    +{radarContext.rekomendasiOrder.toLocaleString("id-ID")} {radarContext.satuan}
+                  </span>
+                </div>
+              </div>
+              <p className="text-[11px] text-blue-700 leading-relaxed">
+                Barang dan kuantitas rekomendasi telah diisi secara otomatis. Anda dapat meninjau atau mengubah kuantitas di bawah sebelum mengajukan.
+              </p>
             </div>
           )}
 

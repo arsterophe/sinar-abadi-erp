@@ -4,6 +4,7 @@ import { createServerClientInstance } from "@/lib/supabase/server";
 import { UserProfile, isValidRole } from "@/types/auth";
 import { PelangganItem, TerminHari } from "@/types/pelanggan";
 import PelangganClientView from "@/components/pelanggan/PelangganClientView";
+import AksesDitolak from "@/components/layout/AksesDitolak";
 
 // Rute ini dilindungi di server menggunakan sesi dinamis & verifikasi profil Supabase.
 // Menonaktifkan instant prerendering pada route dinamis ini sesuai konvensi Next.js 16.
@@ -50,9 +51,16 @@ export default async function PelangganPage() {
 
   // 5. Aturan Hak Akses Rute (PRD Bab 7 & Instruksi):
   // manajer dan penjualan boleh mengakses halaman ini.
-  // gudang DILARANG mengakses halaman atau data pelanggan.
-  if (profile.peran === "gudang") {
-    redirect("/?error=unauthorized_pelanggan");
+  // gudang DILARANG mengakses halaman atau data pelanggan (unauthorized_pelanggan).
+  if (profile.peran === "gudang" || (profile.peran !== "penjualan" && profile.peran !== "manajer")) {
+    return (
+      <AksesDitolak
+        userProfile={profile}
+        activePath="/pelanggan"
+        title="403 — Akses Ditolak: Modul Pelanggan"
+        pesan="Sesuai aturan operasional distribusi CV Sinar Abadi Niaga (PRD Bab 7), modul Pelanggan hanya dapat diakses oleh Staf Penjualan dan Manajer. Staf Gudang tidak memiliki wewenang mengakses data pelanggan."
+      />
+    );
   }
 
   // 6. Query data tabel public.pelanggan secara eksplisit

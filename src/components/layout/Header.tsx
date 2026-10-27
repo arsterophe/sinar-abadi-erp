@@ -82,9 +82,9 @@ export default function Header({
       <div className="flex items-center gap-2 sm:gap-3 shrink-0">
         {/* Current Active Role Badge */}
         <div className="hidden sm:flex items-center gap-2 rounded-lg bg-slate-100/80 px-2.5 py-1 border border-slate-200/80 text-xs">
-          <span className="text-[11px] text-slate-500">Peran:</span>
+          <span className="text-[11px] text-slate-500">Peran Akun:</span>
           <span className="font-semibold text-slate-800 text-[11px]">
-            {roleConfig.badgeLabel}
+            {userProfile ? roleDisplayLabel(userProfile.peran) : roleConfig.badgeLabel}
           </span>
         </div>
 

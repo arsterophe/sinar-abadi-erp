@@ -50,20 +50,23 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
-  const isDashboardRoute = path === "/";
-  const isBarangRoute = path.startsWith("/barang-dan-stok");
-  const isPelangganRoute = path.startsWith("/pelanggan");
-  const isPesananJualRoute = path.startsWith("/pesanan-jual");
   const isLoginRoute = path.startsWith("/login");
 
+  // Rute halaman privat ERP Sinar Abadi yang mewajibkan sesi autentikasi aktif
+  // Meliputi: Dashboard (/), Barang & Stok, Radar Stok, Pelanggan, Pesanan Jual,
+  // Pembelian, Laporan Finansial, dan Pengaturan Sistem.
+  const isPrivateRoute =
+    path === "/" ||
+    path.startsWith("/barang-dan-stok") ||
+    path.startsWith("/radar-stok") ||
+    path.startsWith("/pelanggan") ||
+    path.startsWith("/pesanan-jual") ||
+    path.startsWith("/pembelian") ||
+    path.startsWith("/laporan") ||
+    path.startsWith("/pengaturan");
+
   // Jika mencoba membuka halaman terlindungi tanpa sesi auth, arahkan langsung ke /login
-  if (
-    (isDashboardRoute ||
-      isBarangRoute ||
-      isPelangganRoute ||
-      isPesananJualRoute) &&
-    !user
-  ) {
+  if (isPrivateRoute && !user) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     return NextResponse.redirect(loginUrl);
